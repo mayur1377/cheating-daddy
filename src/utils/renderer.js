@@ -156,7 +156,7 @@ ipcRenderer.on('update-status', (event, status) => {
     cheddar.e().setStatus(status);
 });
 
-// Listen for responses - REMOVED: This is handled in CheatingDaddyApp.js to avoid duplicates
+// Listen for responses - REMOVED: This is handled in AssistantApp.js to avoid duplicates
 // ipcRenderer.on('update-response', (event, response) => {
 //     console.log('Gemini response:', response);
 //     cheddar.e().setResponse(response);

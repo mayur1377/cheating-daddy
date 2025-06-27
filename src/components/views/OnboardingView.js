@@ -250,9 +250,9 @@ export class OnboardingView extends LitElement {
         return html`
             <div class="slide slide-1 ${this.currentSlide === 0 ? 'active' : ''}">
                 <div class="emoji">👋</div>
-                <div class="slide-title">Welcome to Cheating Daddy!</div>
+                <div class="slide-title">Welcome to Assistant!</div>
                 <div class="slide-content">
-                    Cheating Daddy hears what you hear and sees what you see, then generates AI-powered suggestions without any user input needed.
+                    Assistant hears what you hear and sees what you see, then generates AI-powered suggestions without any user input needed.
                 </div>
             </div>
         `;
@@ -319,7 +319,7 @@ export class OnboardingView extends LitElement {
                 <div class="emoji">🎉</div>
                 <div class="slide-title">You're All Set!</div>
                 <div class="slide-content">
-                    Cheating Daddy is completely free to use. Just add your Gemini API key and start getting AI-powered assistance in your interviews
+                    Assistant is completely free to use. Just add your Gemini API key and start getting AI-powered assistance in your interviews
                     and meetings!
                 </div>
             </div>

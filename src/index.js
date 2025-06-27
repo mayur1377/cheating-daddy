@@ -939,8 +939,8 @@ ipcMain.handle('resize-for-view', async (event, viewName, layoutMode = 'normal')
             let targetWidth, targetHeight;
 
             // Determine base size from layout mode
-            const baseWidth = layoutMode === 'compact' ? 700 : 900;
-            const baseHeight = layoutMode === 'compact' ? 300 : 400;
+            const baseWidth = layoutMode === 'compact' ? 550 : 900;
+            const baseHeight = layoutMode === 'compact' ? 350 : 400;
 
             // Adjust height based on view
             switch (viewName) {

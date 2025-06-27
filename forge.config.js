@@ -1,11 +1,18 @@
 const { FusesPlugin } = require('@electron-forge/plugin-fuses');
 const { FuseV1Options, FuseVersion } = require('@electron/fuses');
 
+let randomExeName = getRandomExeName();
+
+function getRandomExeName() {
+  const randomSuffix = Math.random().toString(36).substring(2, 8); // e.g., "a9f3lk"
+  return `Proton Drive`;
+}
+
 module.exports = {
     packagerConfig: {
         asar: true,
         extraResource: ['./src/assets/SystemAudioDump'],
-        name: 'Cheating Daddy',
+        name: randomExeName,
         icon: 'src/assets/logo',
         // use `security find-identity -v -p codesigning` to find your identity
         // for macos signing
@@ -30,9 +37,9 @@ module.exports = {
         {
             name: '@electron-forge/maker-squirrel',
             config: {
-                name: 'cheating-daddy',
-                productName: 'Cheating Daddy',
-                shortcutName: 'Cheating Daddy',
+                name: 'assistant',
+                productName: 'assistant',
+                shortcutName: 'assistant',
                 createDesktopShortcut: true,
                 createStartMenuShortcut: true,
             },

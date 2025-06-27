@@ -8,7 +8,7 @@ import { AssistantView } from '../views/AssistantView.js';
 import { OnboardingView } from '../views/OnboardingView.js';
 import { AdvancedView } from '../views/AdvancedView.js';
 
-export class CheatingDaddyApp extends LitElement {
+export class AssistantApp extends LitElement {
     static styles = css`
         * {
             box-sizing: border-box;
@@ -482,4 +482,4 @@ export class CheatingDaddyApp extends LitElement {
     }
 }
 
-customElements.define('cheating-daddy-app', CheatingDaddyApp);
+customElements.define('assistant-app', AssistantApp);
