@@ -149,16 +149,15 @@ async function initializeGeminiSession(apiKey, customPrompt = '', profile = 'int
                     // Handle AI model response
                     if (message.serverContent?.modelTurn?.parts) {
                         for (const part of message.serverContent.modelTurn.parts) {
-                            console.log(part);
                             if (part.text) {
                                 messageBuffer += part.text;
+                                // Render the chunked response to the renderer
+                                sendToRenderer('update-response', messageBuffer);
                             }
                         }
                     }
 
                     if (message.serverContent?.generationComplete) {
-                        sendToRenderer('update-response', messageBuffer);
-
                         // Save conversation turn when we have both transcription and AI response
                         if (currentTranscription && messageBuffer) {
                             saveConversationTurn(currentTranscription, messageBuffer);
