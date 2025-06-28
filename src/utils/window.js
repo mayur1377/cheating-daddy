@@ -134,6 +134,7 @@ function getDefaultKeybinds() {
         nextResponse: isMac ? 'Cmd+]' : 'Ctrl+]',
         scrollUp: isMac ? 'Cmd+Shift+Up' : 'Ctrl+Shift+Up',
         scrollDown: isMac ? 'Cmd+Shift+Down' : 'Ctrl+Shift+Down',
+        resetContext: isMac ? 'Cmd+G' : 'Ctrl+G',
     };
 }
 
@@ -310,6 +311,24 @@ function updateGlobalShortcuts(keybinds, mainWindow, sendToRenderer, geminiSessi
             console.log(`Registered scrollDown: ${keybinds.scrollDown}`);
         } catch (error) {
             console.error(`Failed to register scrollDown (${keybinds.scrollDown}):`, error);
+        }
+    }
+
+    // Register reset context shortcut
+    if (keybinds.resetContext) {
+        try {
+            globalShortcut.register(keybinds.resetContext, async () => {
+                console.log('Reset context shortcut triggered');
+                try {
+                    // Send reset context message to renderer
+                    sendToRenderer('reset-context-triggered');
+                } catch (error) {
+                    console.error('Error triggering context reset:', error);
+                }
+            });
+            console.log(`Registered resetContext: ${keybinds.resetContext}`);
+        } catch (error) {
+            console.error(`Failed to register resetContext (${keybinds.resetContext}):`, error);
         }
     }
 }

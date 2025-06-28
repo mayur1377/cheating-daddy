@@ -493,6 +493,42 @@ function setupGeminiIpcHandlers(geminiSessionRef) {
             return { success: false, error: error.message };
         }
     });
+
+    ipcMain.handle('reset-context-and-reinitialize', async (event) => {
+        try {
+            console.log('Reset context and reinitialize session requested');
+            
+            // Stop any existing audio capture
+            stopMacOSAudioCapture();
+            
+            // Close existing session if it exists
+            if (geminiSessionRef.current) {
+                try {
+                    await geminiSessionRef.current.close();
+                } catch (closeError) {
+                    console.warn('Error closing existing session:', closeError);
+                }
+                geminiSessionRef.current = null;
+            }
+            
+            // Initialize a new conversation session (reset context)
+            initializeNewSession();
+            
+            // Clear any message buffer
+            messageBuffer = '';
+            currentTranscription = '';
+            
+            // Send status update to renderer
+            sendToRenderer('update-status', 'Context reset - Ready to reinitialize');
+            sendToRenderer('context-reset-complete');
+            
+            console.log('Context reset completed successfully');
+            return { success: true, sessionId: currentSessionId };
+        } catch (error) {
+            console.error('Error resetting context:', error);
+            return { success: false, error: error.message };
+        }
+    });
 }
 
 module.exports = {

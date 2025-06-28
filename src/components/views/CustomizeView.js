@@ -631,6 +631,7 @@ export class CustomizeView extends LitElement {
             nextResponse: isMac ? 'Cmd+]' : 'Ctrl+]',
             scrollUp: isMac ? 'Cmd+Shift+Up' : 'Ctrl+Shift+Up',
             scrollDown: isMac ? 'Cmd+Shift+Down' : 'Ctrl+Shift+Down',
+            resetContext: isMac ? 'Cmd+G' : 'Ctrl+G',
         };
     }
 
@@ -732,6 +733,11 @@ export class CustomizeView extends LitElement {
                 key: 'scrollDown',
                 name: 'Scroll Response Down',
                 description: 'Scroll the AI response content down',
+            },
+            {
+                key: 'resetContext',
+                name: 'Reset Context',
+                description: 'Reset current context and reinitialize Gemini session',
             },
         ];
     }

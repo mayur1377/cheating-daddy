@@ -159,6 +159,12 @@ export class AssistantApp extends LitElement {
             ipcRenderer.on('click-through-toggled', (_, isEnabled) => {
                 this._isClickThrough = isEnabled;
             });
+            ipcRenderer.on('reset-context-triggered', () => {
+                this.handleResetContext();
+            });
+            ipcRenderer.on('context-reset-complete', () => {
+                this.handleContextResetComplete();
+            });
         }
     }
 
@@ -321,6 +327,57 @@ export class AssistantApp extends LitElement {
     // Onboarding event handlers
     handleOnboardingComplete() {
         this.currentView = 'main';
+    }
+
+    // Reset context event handlers
+    async handleResetContext() {
+        console.log('Reset context shortcut triggered');
+        
+        if (window.require) {
+            const { ipcRenderer } = window.require('electron');
+            try {
+                // Call the reset context and reinitialize function
+                const result = await ipcRenderer.invoke('reset-context-and-reinitialize');
+                
+                if (result.success) {
+                    console.log('Context reset successful, new session ID:', result.sessionId);
+                    
+                    // Clear current responses and reset UI state
+                    this.responses = [];
+                    this.currentResponseIndex = -1;
+                    
+                    // Update status to show reset is complete
+                    this.setStatus('Context reset - Ready to start new session');
+                    
+                    // If we're currently in assistant view, we might want to restart the session
+                    if (this.currentView === 'assistant' && window.cheddar) {
+                        // Stop current capture
+                        window.cheddar.stopCapture();
+                        
+                        // Reinitialize with current settings
+                        setTimeout(async () => {
+                            await window.cheddar.initializeGemini(this.selectedProfile, this.selectedLanguage);
+                            window.cheddar.startCapture(this.selectedScreenshotInterval, this.selectedImageQuality);
+                            this.setStatus('Session reinitialized - Listening...');
+                        }, 1000);
+                    }
+                    
+                    this.requestUpdate();
+                } else {
+                    console.error('Failed to reset context:', result.error);
+                    this.setStatus('Error resetting context: ' + result.error);
+                }
+            } catch (error) {
+                console.error('Error calling reset context:', error);
+                this.setStatus('Error resetting context');
+            }
+        }
+    }
+
+    handleContextResetComplete() {
+        console.log('Context reset completed');
+        // Additional UI updates can be done here if needed
+        this.requestUpdate();
     }
 
     updated(changedProperties) {
