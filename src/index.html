@@ -1,7 +1,7 @@
 <!doctype html>
 <html>
     <head>
-        <meta http-equiv="content-security-policy" content="script-src 'self' 'unsafe-inline'" />
+        <meta http-equiv="content-security-policy" content="script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline';" />
         <title>Proton Drive</title>
         <style>
             :root {
@@ -101,6 +101,9 @@
     </head>
     <body>
         <script src="assets/marked-4.3.0.min.js"></script>
+        <link rel="stylesheet" href="assets/styles/atom-one-dark.min.css">
+        <script src="assets/highlight.min.js"></script>
+        <script src="assets/java.min.js"></script> <!-- Include Java language definition -->
         <script type="module" src="components/app/AssistantApp.js"></script>
 
         <assistant-app id="cheddar"></assistant-app>

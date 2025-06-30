@@ -80,27 +80,92 @@ export class AssistantView extends LitElement {
         }
 
         .response-container code {
-            background: rgba(255, 255, 255, 0.1);
-            padding: 0.2em 0.4em;
-            border-radius: 3px;
-            font-family: 'Monaco', 'Menlo', 'Ubuntu Mono', monospace;
-            font-size: 0.85em;
+            /* Allow highlight.js theme to apply all styling */
+            font-family: "Consolas", 'Courier New', monospace;
+            font-size: 0.9724em; /* Increased by 30% from 0.748em */
+            line-height: 0.28; /* Reduced by 50% from 0.56 */
         }
 
         .response-container pre {
-            background: var(--input-background);
+            background: #1e1e1e; /* A dark background for code blocks */
             border: 1px solid var(--button-border);
             border-radius: 6px;
             padding: 1em;
-            overflow-x: auto;
+            /* Remove overflow-x: auto to prevent horizontal scrollbar */
             margin: 1em 0;
+            white-space: pre-wrap; /* Wrap long lines */
+            word-wrap: break-word; /* Break words if necessary */
         }
 
         .response-container pre code {
-            background: none;
-            padding: 0;
-            border-radius: 0;
+            /* Allow highlight.js theme to apply all styling */
+            background: transparent; /* Ensure pre background shows through */
+            font-family: "Consolas", 'Courier New', monospace;
+            font-size: 0.9724em; /* Increased by 30% from 0.748em */
+            line-height: 0.28; /* Reduced by 50% from 0.56 */
         }
+
+        /* Force highlight.js colors with !important if necessary */
+        .response-container pre code .hljs-comment,
+        .response-container pre code .hljs-quote {
+            color: #5c6370 !important; /* Atom One Dark comment color */
+        }
+        .response-container pre code .hljs-keyword,
+        .response-container pre code .hljs-selector-tag,
+        .response-container pre code .hljs-subst {
+            color: #c678dd !important; /* Atom One Dark keyword color */
+        }
+        .response-container pre code .hljs-number,
+        .response-container pre code .hljs-literal,
+        .response-container pre code .hljs-variable,
+        .response-container pre code .hljs-template-variable,
+        .response-container pre code .hljs-tag .hljs-attr {
+            color: #d19a66 !important; /* Atom One Dark number/variable color */
+        }
+        .response-container pre code .hljs-string,
+        .response-container pre code .hljs-doctag {
+            color: #98c379 !important; /* Atom One Dark string color */
+        }
+        .response-container pre code .hljs-title,
+        .response-container pre code .hljs-section,
+        .response-container pre code .hljs-name,
+        .response-container pre code .hljs-selector-id,
+        .response-container pre code .hljs-selector-class {
+            color: #e6c07b !important; /* Atom One Dark title/name color */
+        }
+        .response-container pre code .hljs-type,
+        .response-container pre code .hljs-built_in,
+        .response-container pre code .hljs-builtin-name,
+        .response-container pre code .hljs-attr,
+        .response-container pre code .hljs-selector-attr,
+        .response-container pre code .hljs-selector-pseudo,
+        .response-container pre code .hljs-addition,
+        .response-container pre code .hljs-variable.language {
+            color: #e06c75 !important; /* Atom One Dark type/attribute color */
+        }
+        .response-container pre code .hljs-class .hljs-title,
+        .response-container pre code .hljs-function .hljs-title {
+            color: #61afef !important; /* Atom One Dark class/function title color */
+        }
+        .response-container pre code .hljs-symbol,
+        .response-container pre code .hljs-bullet,
+        .response-container pre code .hljs-link,
+        .response-container pre code .hljs-deletion {
+            color: #e06c75 !important; /* Atom One Dark symbol/link color */
+        }
+        .response-container pre code .hljs-meta {
+            color: #abb2bf !important; /* Atom One Dark meta color */
+        }
+        .response-container pre code .hljs-emphasis {
+            font-style: italic !important;
+        }
+        .response-container pre code .hljs-strong {
+            font-weight: bold !important;
+        }
+        .response-container pre code .hljs {
+            color: #abb2bf !important; /* Default text color for Atom One Dark */
+        }
+
 
         .response-container a {
             color: var(--link-color);
@@ -273,24 +338,34 @@ export class AssistantView extends LitElement {
 
     renderMarkdown(content) {
         // Check if marked is available
-        if (typeof window !== 'undefined' && window.marked) {
+        if (typeof window !== 'undefined' && window.marked && window.hljs) {
             try {
                 // Configure marked for better security and formatting
                 window.marked.setOptions({
                     breaks: true,
                     gfm: true,
                     sanitize: false, // We trust the AI responses
+                    highlight: function (code, lang) {
+                        let language = lang;
+                        if (!window.hljs.getLanguage(lang)) {
+                            language = 'java'; // Default to Java if language not recognized
+                        }
+                        console.log(`Highlighting code: lang=${lang}, effective_lang=${language}`);
+                        const highlightedCode = window.hljs.highlight(code, { language }).value;
+                        return highlightedCode;
+                    },
                 });
                 const rendered = window.marked.parse(content);
                 console.log('Markdown rendered successfully');
+                console.log('Rendered response (after marked parse):', rendered);
                 return rendered;
             } catch (error) {
                 console.warn('Error parsing markdown:', error);
                 return content; // Fallback to plain text
             }
         }
-        console.log('Marked not available, using plain text');
-        return content; // Fallback if marked is not available
+        console.log('Marked or Highlight.js not available, using plain text');
+        return content; // Fallback if marked or highlight.js is not available
     }
 
     getResponseCounter() {
@@ -351,6 +426,12 @@ export class AssistantView extends LitElement {
 
         // Load and apply font size
         this.loadFontSize();
+
+        // Dynamically load highlight.js theme into shadow DOM
+        const link = document.createElement('link');
+        link.rel = 'stylesheet';
+        link.href = '../../assets/styles/atom-one-dark.min.css'; // Path relative to AssistantView.js
+        this.shadowRoot.appendChild(link);
 
         // Set up IPC listeners for keyboard shortcuts
         if (window.require) {
@@ -450,6 +531,10 @@ export class AssistantView extends LitElement {
             const renderedResponse = this.renderMarkdown(currentResponse);
             console.log('Rendered response:', renderedResponse);
             container.innerHTML = renderedResponse;
+            // Manually highlight the code blocks after rendering
+            if (window.hljs) {
+                window.hljs.highlightAll();
+            }
         } else {
             console.log('Response container not found');
         }
