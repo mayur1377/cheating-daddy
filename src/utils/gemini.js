@@ -165,6 +165,7 @@ async function initializeGeminiSession(apiKey, customPrompt = '', profile = 'int
                         }
 
                         messageBuffer = '';
+                        sendToRenderer('response-complete');
                     }
 
                     if (message.serverContent?.turnComplete) {

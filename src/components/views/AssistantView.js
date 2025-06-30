@@ -267,7 +267,7 @@ export class AssistantView extends LitElement {
     getCurrentResponse() {
         const profileNames = this.getProfileNames();
         return this.responses.length > 0 && this.currentResponseIndex >= 0
-            ? this.responses[this.currentResponseIndex]
+            ? this.responses[this.currentResponseIndex].text
             : `Hey, Im listening to your ${profileNames[this.selectedProfile] || 'session'}?`;
     }
 

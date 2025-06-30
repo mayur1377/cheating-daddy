@@ -151,7 +151,10 @@ export class AssistantApp extends LitElement {
         if (window.require) {
             const { ipcRenderer } = window.require('electron');
             ipcRenderer.on('update-response', (_, response) => {
-                this.setResponse(response);
+                this.setResponse(response, false); // Not a complete response yet
+            });
+            ipcRenderer.on('response-complete', () => {
+                this.setResponse('', true); // Signal response completion
             });
             ipcRenderer.on('update-status', (_, status) => {
                 this.setStatus(status);
@@ -182,12 +185,24 @@ export class AssistantApp extends LitElement {
         this.statusText = text;
     }
 
-    setResponse(response) {
-        this.responses.push(response);
+    setResponse(response, isComplete) {
+        if (isComplete) {
+            if (this.responses.length > 0) {
+                // Create a new object for the last response to trigger update
+                const lastResponse = { ...this.responses[this.responses.length - 1], isComplete: true };
+                this.responses = [...this.responses.slice(0, -1), lastResponse];
+            }
+            this.requestUpdate();
+            return;
+        }
 
-        // If user is viewing the latest response (or no responses yet), auto-navigate to new response
-        if (this.currentResponseIndex === this.responses.length - 2 || this.currentResponseIndex === -1) {
+        if (this.responses.length === 0 || this.responses[this.responses.length - 1].isComplete) {
+            this.responses = [...this.responses, { text: response, isComplete: false }];
             this.currentResponseIndex = this.responses.length - 1;
+        } else {
+            // Append to the last response, creating a new object to trigger update
+            const lastResponse = { ...this.responses[this.responses.length - 1], text: response };
+            this.responses = [...this.responses.slice(0, -1), lastResponse];
         }
 
         this.requestUpdate();
