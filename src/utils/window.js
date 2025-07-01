@@ -35,6 +35,7 @@ function createWindow(sendToRenderer, geminiSessionRef) {
         alwaysOnTop: true,
         skipTaskbar: true,
         hiddenInMissionControl: true,
+        focusable: false,
         webPreferences: {
             nodeIntegration: true,
             contextIsolation: false,
