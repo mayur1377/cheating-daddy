@@ -169,6 +169,8 @@ export class AssistantApp extends LitElement {
                 this.handleContextResetComplete();
             });
         }
+        // Add functions to window.cheddar for IPC callbacks
+        this.setupCheddarCallbacks();
     }
 
     disconnectedCallback() {
@@ -179,6 +181,22 @@ export class AssistantApp extends LitElement {
             ipcRenderer.removeAllListeners('update-status');
             ipcRenderer.removeAllListeners('click-through-toggled');
         }
+    }
+
+    setupCheddarCallbacks() {
+        // Initialize window.cheddar if it doesn't exist
+        if (!window.cheddar) {
+            window.cheddar = {};
+        }
+
+        // Add functions to get current view and layout mode
+        window.cheddar.getCurrentView = () => {
+            return this.currentView;
+        };
+
+        window.cheddar.getLayoutMode = () => {
+            return this.layoutMode;
+        };
     }
 
     setStatus(text) {
@@ -232,10 +250,6 @@ export class AssistantApp extends LitElement {
     async handleClose() {
         if (this.currentView === 'customize' || this.currentView === 'help' || this.currentView === 'history') {
             this.currentView = 'main';
-        } else if (this.currentView === 'onboarding') {
-            // Allow closing onboarding without completing it
-            localStorage.setItem('onboardingCompleted', 'true');
-            this.currentView = 'main';
         } else if (this.currentView === 'assistant') {
             if (window.cheddar) {
                 window.cheddar.stopCapture();
@@ -267,6 +281,17 @@ export class AssistantApp extends LitElement {
 
     // Main view event handlers
     async handleStart() {
+        // check if api key is empty do nothing
+        const apiKey = localStorage.getItem('apiKey')?.trim();
+        if (!apiKey || apiKey === '') {
+            // Trigger the red blink animation on the API key input
+            const mainView = this.shadowRoot.querySelector('main-view');
+            if (mainView && mainView.triggerApiKeyError) {
+                mainView.triggerApiKeyError();
+            }
+            return;
+        }
+
         if (window.cheddar) {
             await window.cheddar.initializeGemini(this.selectedProfile, this.selectedLanguage);
             // Pass the screenshot interval as string (including 'manual' option)
@@ -544,9 +569,9 @@ export class AssistantApp extends LitElement {
         if (window.require) {
             try {
                 const { ipcRenderer } = window.require('electron');
-                await ipcRenderer.invoke('update-layout-mode', layoutMode);
+                await ipcRenderer.invoke('update-sizes', layoutMode);
             } catch (error) {
-                console.error('Failed to update layout mode in main process:', error);
+                console.error('Failed to update sizes in main process:', error);
             }
         }
 
