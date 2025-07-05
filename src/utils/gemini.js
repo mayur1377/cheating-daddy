@@ -923,6 +923,112 @@ function setupGeminiIpcHandlers(geminiSessionRef) {
         }
     });
 
+    ipcMain.handle('process-context-with-screenshot', async (event) => {
+        if (!geminiSessionRef.current) {
+            return { success: false, error: 'No active Gemini session' };
+        }
+
+        // Prevent multiple simultaneous requests
+        if (expectingManualResponse) {
+            console.log('Already waiting for a manual response, skipping request');
+            return { success: false, error: 'Already processing a request' };
+        }
+
+        try {
+            console.log('Processing context with screenshot manually...');
+            
+            // First, trigger screenshot capture
+            const screenshotResult = await new Promise((resolve) => {
+                // Send message to renderer to capture screenshot
+                sendToRenderer('capture-screenshot-for-context');
+                
+                // Wait a moment for screenshot to be captured and sent
+                setTimeout(() => {
+                    resolve({ success: true });
+                }, 2000); // 2 second delay like in captureManualScreenshot
+            });
+            
+            // Get recent transcriptions (last 10 minutes for more context)
+            const recentTranscriptions = getRecentTranscriptions(10 * 60 * 1000);
+            
+            // Build context with proper speaker labels
+            let contextMessage = '';
+            let wordCount = 0;
+            const maxWords = 2000;
+            
+            if (recentTranscriptions.length > 0) {
+                // Format transcriptions with proper labels
+                const formattedTranscriptions = recentTranscriptions.map(entry => {
+                    const timeAgo = Math.floor((Date.now() - entry.timestamp) / 1000);
+                    const speaker = entry.source === AUDIO_SOURCES.INTERVIEWER ? 'Interviewer says' : 'Interviewee says';
+                    return `[${timeAgo}s ago] ${speaker}: ${entry.text}`;
+                });
+                
+                // Limit context to 1000-2000 words, prioritizing most recent
+                let selectedTranscriptions = [];
+                for (let i = formattedTranscriptions.length - 1; i >= 0; i--) {
+                    const transcription = formattedTranscriptions[i];
+                    const transcriptionWords = transcription.split(' ').length;
+                    
+                    if (wordCount + transcriptionWords <= maxWords) {
+                        selectedTranscriptions.unshift(transcription);
+                        wordCount += transcriptionWords;
+                    } else {
+                        break;
+                    }
+                }
+                
+                if (selectedTranscriptions.length > 0) {
+                    contextMessage += `Recent conversation context (last ${Math.floor(wordCount)} words):\n${selectedTranscriptions.join('\n')}\n\n`;
+                }
+            }
+            
+            // Find the most recent question from interviewer
+            const recentQuestions = recentTranscriptions
+                .filter(entry => entry.source === AUDIO_SOURCES.INTERVIEWER)
+                .slice(-3); // Last 3 interviewer statements
+            
+            if (recentQuestions.length > 0) {
+                const lastQuestion = recentQuestions[recentQuestions.length - 1];
+                contextMessage += `Most recent question to focus on: "${lastQuestion.text}"\n\n`;
+            }
+            
+            if (contextMessage.trim().length === 0) {
+                contextMessage = 'No recent conversation context available. Please analyze the current screen content and provide assistance based on what you can see.\n\n';
+            }
+            
+            // Add the predefined prompt from captureManualScreenshot
+            contextMessage += `Help me on this page, give me the answer no bs, complete answer.
+        So if its a code question, give me the approach in few bullet points, then the entire code. Also if theres anything else i need to know, tell me.
+        If its a mcq question, give me the answer no bs, complete answer.
+        
+        Based on the above conversation context and current screen capture analysis, please provide a comprehensive and helpful response. Focus on answering the most recent question from the interviewer.`;
+            
+            console.log(`Sending combined screenshot + context processing request to Gemini (${wordCount} words)`);
+            expectingManualResponse = true; // Set flag to process the upcoming response
+            
+            // Set a timeout to reset the flag if no response comes back
+            const responseTimeout = setTimeout(() => {
+                if (expectingManualResponse) {
+                    console.warn('Timeout waiting for Gemini response, resetting expectingManualResponse flag');
+                    expectingManualResponse = false;
+                    sendToRenderer('update-status', 'Request timeout - ready for new requests');
+                }
+            }, 30000); // 30 second timeout
+            
+            // Store timeout ID to clear it if response comes back
+            global.currentResponseTimeout = responseTimeout;
+            
+            await geminiSessionRef.current.sendRealtimeInput({ text: contextMessage });
+            
+            return { success: true, wordCount };
+        } catch (error) {
+            console.error('Error processing context with screenshot:', error);
+            expectingManualResponse = false; // Reset flag on error
+            return { success: false, error: error.message };
+        }
+    });
+
     ipcMain.handle('reset-context-and-reinitialize', async (event) => {
         try {
             console.log('Reset context and reinitialize session requested');

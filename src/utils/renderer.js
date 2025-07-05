@@ -956,14 +956,26 @@ async function captureScreenshot(imageQuality = 'medium', isManual = false) {
 }
 
 async function captureManualScreenshot(imageQuality = null) {
-    console.log('Manual screenshot triggered');
+    console.log('Manual screenshot triggered - using combined context processing');
+    
+    try {
+        const result = await ipcRenderer.invoke('process-context-with-screenshot');
+        if (result.success) {
+            console.log('Combined screenshot + context processing completed successfully');
+        } else {
+            console.error('Failed to process context with screenshot:', result.error);
+        }
+        return result;
+    } catch (error) {
+        console.error('Error in combined screenshot + context processing:', error);
+        return { success: false, error: error.message };
+    }
+}
+
+async function captureScreenshotForContext(imageQuality = null) {
+    console.log('Screenshot for context triggered');
     const quality = imageQuality || currentImageQuality;
     await captureScreenshot(quality, true); // Pass true for isManual
-    await new Promise(resolve => setTimeout(resolve, 2000)); // TODO shitty hack
-    await sendTextMessage(`Help me on this page, give me the answer no bs, complete answer.
-        So if its a code question, give me the approach in few bullet points, then the entire code. Also if theres anything else i need to know, tell me.
-        If its a mcq question, give me the answer no bs, complete answer.
-        `);
 }
 
 // Expose functions to global scope for external access
@@ -1190,6 +1202,7 @@ window.cheddar = {
     stopCapture,
     sendTextMessage,
     handleShortcut,
+    captureScreenshotForContext,
     // Microphone functions
     startMicrophoneCapture,
     stopMicrophoneCapture,
@@ -1209,3 +1222,8 @@ window.cheddar = {
     getAudioRouter: () => audioRouter,
     getAudioStats: () => audioRouter ? audioRouter.getActivityStats() : null,
 };
+
+// Add IPC listener for screenshot capture
+ipcRenderer.on('capture-screenshot-for-context', () => {
+    captureScreenshotForContext();
+});
