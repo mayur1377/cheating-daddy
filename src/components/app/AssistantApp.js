@@ -116,6 +116,7 @@ export class AssistantApp extends LitElement {
         selectedImageQuality: { type: String },
         layoutMode: { type: String },
         advancedMode: { type: Boolean },
+        isMicrophoneActive: { type: Boolean },
         _viewInstances: { type: Object, state: true },
         _isClickThrough: { state: true },
     };
@@ -137,6 +138,7 @@ export class AssistantApp extends LitElement {
         this.advancedMode = localStorage.getItem('advancedMode') === 'true';
         this.responses = [];
         this.currentResponseIndex = -1;
+        this.isMicrophoneActive = false;
         this._viewInstances = new Map();
         this._isClickThrough = false;
 
@@ -255,6 +257,12 @@ export class AssistantApp extends LitElement {
                 window.cheddar.stopCapture();
             }
 
+            // Stop microphone capture if active
+            if (this.isMicrophoneActive && window.stopMicrophoneCapture) {
+                await window.stopMicrophoneCapture();
+                this.isMicrophoneActive = false;
+            }
+
             // Close the session
             if (window.require) {
                 const { ipcRenderer } = window.require('electron');
@@ -364,6 +372,11 @@ export class AssistantApp extends LitElement {
         this.currentResponseIndex = e.detail.index;
     }
 
+    handleMicrophoneStateChanged(e) {
+        this.isMicrophoneActive = e.detail.isActive;
+        this.requestUpdate();
+    }
+
     // Onboarding event handlers
     handleOnboardingComplete() {
         this.currentView = 'main';
@@ -385,6 +398,12 @@ export class AssistantApp extends LitElement {
                     // Clear current responses and reset UI state
                     this.responses = [];
                     this.currentResponseIndex = -1;
+                    
+                    // Stop microphone capture if active
+                    if (this.isMicrophoneActive && window.stopMicrophoneCapture) {
+                        await window.stopMicrophoneCapture();
+                        this.isMicrophoneActive = false;
+                    }
                     
                     // Update status to show reset is complete
                     this.setStatus('Context reset - Ready to start new session');
@@ -511,8 +530,10 @@ export class AssistantApp extends LitElement {
                         .responses=${this.responses}
                         .currentResponseIndex=${this.currentResponseIndex}
                         .selectedProfile=${this.selectedProfile}
+                        .isMicrophoneActive=${this.isMicrophoneActive}
                         .onSendText=${message => this.handleSendText(message)}
                         @response-index-changed=${this.handleResponseIndexChanged}
+                        @microphone-state-changed=${this.handleMicrophoneStateChanged}
                     ></assistant-view>
                 `;
 

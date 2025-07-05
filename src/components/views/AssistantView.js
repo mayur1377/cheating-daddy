@@ -302,6 +302,68 @@ export class AssistantView extends LitElement {
             min-width: 60px;
             text-align: center;
         }
+
+        .mic-button {
+            background: transparent;
+            color: var(--description-color);
+            border: none;
+            padding: 8px;
+            border-radius: 50%;
+            font-size: 12px;
+            display: flex;
+            align-items: center;
+            width: 36px;
+            height: 36px;
+            justify-content: center;
+            transition: all 0.2s ease;
+        }
+
+        .mic-button:hover {
+            background: rgba(255, 255, 255, 0.1);
+        }
+
+        .mic-button.active {
+            color: #ff4444;
+            background: rgba(255, 68, 68, 0.1);
+        }
+
+        .mic-button.active:hover {
+            background: rgba(255, 68, 68, 0.2);
+        }
+
+        .mic-button svg {
+            width: 18px;
+            height: 18px;
+        }
+
+        .process-button {
+            background: var(--start-button-background);
+            color: white;
+            border: none;
+            padding: 8px 12px;
+            border-radius: 6px;
+            font-size: 12px;
+            font-weight: 500;
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            transition: all 0.2s ease;
+            white-space: nowrap;
+        }
+
+        .process-button:hover {
+            background: var(--start-button-hover);
+            transform: translateY(-1px);
+        }
+
+        .process-button:active {
+            transform: translateY(0);
+        }
+
+        .process-button svg {
+            width: 14px;
+            height: 14px;
+        }
     `;
 
     static properties = {
@@ -309,6 +371,7 @@ export class AssistantView extends LitElement {
         currentResponseIndex: { type: Number },
         selectedProfile: { type: String },
         onSendText: { type: Function },
+        isMicrophoneActive: { type: Boolean },
     };
 
     constructor() {
@@ -317,6 +380,7 @@ export class AssistantView extends LitElement {
         this.currentResponseIndex = -1;
         this.selectedProfile = 'interview';
         this.onSendText = () => {};
+        this.isMicrophoneActive = false;
     }
 
     getProfileNames() {
@@ -501,6 +565,55 @@ export class AssistantView extends LitElement {
         }
     }
 
+    async handleMicrophoneToggle() {
+        if (this.isMicrophoneActive) {
+            // Stop microphone capture
+            if (window.stopMicrophoneCapture) {
+                await window.stopMicrophoneCapture();
+            }
+            this.isMicrophoneActive = false;
+        } else {
+            // Start microphone capture
+            if (window.startMicrophoneCapture) {
+                try {
+                    await window.startMicrophoneCapture();
+                    this.isMicrophoneActive = true;
+                } catch (error) {
+                    console.error('Failed to start microphone capture:', error);
+                    return; // Don't dispatch event if failed
+                }
+            }
+        }
+        
+        // Dispatch event to parent component
+        this.dispatchEvent(
+            new CustomEvent('microphone-state-changed', {
+                detail: { isActive: this.isMicrophoneActive },
+                bubbles: true
+            })
+        );
+        
+        this.requestUpdate();
+    }
+
+    async handleProcessContext() {
+        console.log('Processing all context manually...');
+        
+        if (window.require) {
+            const { ipcRenderer } = window.require('electron');
+            try {
+                const result = await ipcRenderer.invoke('process-all-context');
+                if (result.success) {
+                    console.log('Context processed successfully');
+                } else {
+                    console.error('Failed to process context:', result.error);
+                }
+            } catch (error) {
+                console.error('Error processing context:', error);
+            }
+        }
+    }
+
     scrollToBottom() {
         setTimeout(() => {
             const container = this.shadowRoot.querySelector('.response-container');
@@ -563,6 +676,23 @@ export class AssistantView extends LitElement {
                 </button>
 
                 ${this.responses.length > 0 ? html` <span class="response-counter">${responseCounter}</span> ` : ''}
+
+                <button class="mic-button ${this.isMicrophoneActive ? 'active' : ''}" @click=${this.handleMicrophoneToggle} title="${this.isMicrophoneActive ? 'Stop microphone' : 'Start microphone'}">
+                    <svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+                        <path d="M12 1C10.34 1 9 2.34 9 4V12C9 13.66 10.34 15 12 15C13.66 15 15 13.66 15 12V4C15 2.34 13.66 1 12 1Z" fill="currentColor"/>
+                        <path d="M19 10V12C19 16.42 15.42 20 11 20H13C17.42 20 21 16.42 21 12V10H19Z" fill="currentColor"/>
+                        <path d="M5 10V12C5 16.42 8.58 20 13 20H11C6.58 20 3 16.42 3 12V10H5Z" fill="currentColor"/>
+                        <path d="M12 22V20" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+                        <path d="M8 22H16" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+                    </svg>
+                </button>
+
+                <button class="process-button" @click=${this.handleProcessContext} title="Process all context and get AI response">
+                    <svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+                        <path d="M13 2L3 14H12L11 22L21 10H12L13 2Z" fill="currentColor"/>
+                    </svg>
+                    Process
+                </button>
 
                 <input type="text" id="textInput" placeholder="Type a message to the AI..." @keydown=${this.handleTextKeydown} />
 

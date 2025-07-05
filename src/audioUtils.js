@@ -1,6 +1,28 @@
 const fs = require('fs');
 const path = require('path');
 
+// Audio source types for tagging
+const AUDIO_SOURCES = {
+    INTERVIEWER: 'interviewer', // Speaker/system audio
+    INTERVIEWEE: 'interviewee'  // Microphone audio
+};
+
+// VAD (Voice Activity Detection) configuration - optimized for microphone audio
+const VAD_CONFIG = {
+    SILENCE_THRESHOLD: 0.001,    // More sensitive for microphone audio
+    MIN_SPEECH_DURATION: 0.05,   // Shorter duration for faster response
+    MAX_SILENCE_DURATION: 0.3,   // Shorter silence duration for continuous capture
+    SAMPLE_RATE: 24000
+};
+
+// Separate VAD config for speaker audio (same as microphone now)
+const SPEAKER_VAD_CONFIG = {
+    SILENCE_THRESHOLD: 0.005,
+    MIN_SPEECH_DURATION: 0.1,
+    MAX_SILENCE_DURATION: 0.5,
+    SAMPLE_RATE: 24000
+};
+
 // Convert raw PCM to WAV format for easier playback and verification
 function pcmToWav(pcmBuffer, outputPath, sampleRate = 24000, channels = 1, bitDepth = 16) {
     const byteRate = sampleRate * channels * (bitDepth / 8);
@@ -83,8 +105,54 @@ function analyzeAudioBuffer(buffer, label = 'Audio') {
     };
 }
 
+// Voice Activity Detection for microphone audio
+function detectVoiceActivity(buffer, source = AUDIO_SOURCES.INTERVIEWEE) {
+    const analysis = analyzeAudioBuffer(buffer, `VAD-${source}`);
+    
+    // Use appropriate VAD config based on source
+    const vadConfig = source === AUDIO_SOURCES.INTERVIEWER ? SPEAKER_VAD_CONFIG : VAD_CONFIG;
+    
+    // For interviewer audio (system), use speaker-optimized settings
+    if (source === AUDIO_SOURCES.INTERVIEWER) {
+        return {
+            hasVoice: analysis.rmsValue > vadConfig.SILENCE_THRESHOLD,
+            confidence: analysis.rmsValue > vadConfig.SILENCE_THRESHOLD ? 0.9 : 0.1,
+            source: source,
+            analysis: analysis
+        };
+    }
+    
+    // For interviewee audio (microphone), use more sensitive thresholds
+    const hasVoice = analysis.rmsValue > vadConfig.SILENCE_THRESHOLD && 
+                     analysis.silencePercentage < 85; // More permissive for microphone audio
+    
+    const confidence = hasVoice ? 
+        Math.min(0.95, analysis.rmsValue / VAD_CONFIG.SILENCE_THRESHOLD) : 
+        Math.max(0.05, 1 - (analysis.silencePercentage / 100));
+    
+    return {
+        hasVoice: hasVoice,
+        confidence: confidence,
+        source: source,
+        analysis: analysis
+    };
+}
+
+// Enhanced audio buffer analysis with source tagging
+function analyzeAudioBufferWithSource(buffer, source, label = 'Audio') {
+    const analysis = analyzeAudioBuffer(buffer, `${label}-${source}`);
+    const vadResult = detectVoiceActivity(buffer, source);
+    
+    return {
+        ...analysis,
+        source: source,
+        vad: vadResult,
+        timestamp: Date.now()
+    };
+}
+
 // Save audio buffer with metadata for debugging
-function saveDebugAudio(buffer, type, timestamp = Date.now()) {
+function saveDebugAudio(buffer, type, timestamp = Date.now(), source = null) {
     const homeDir = require('os').homedir();
     const debugDir = path.join(homeDir, 'cheddar', 'debug');
 
@@ -102,14 +170,18 @@ function saveDebugAudio(buffer, type, timestamp = Date.now()) {
     // Convert to WAV for easy playback
     pcmToWav(buffer, wavPath);
 
-    // Analyze and save metadata
-    const analysis = analyzeAudioBuffer(buffer, type);
+    // Analyze and save metadata with source information
+    const analysis = source ? 
+        analyzeAudioBufferWithSource(buffer, source, type) : 
+        analyzeAudioBuffer(buffer, type);
+    
     fs.writeFileSync(
         metaPath,
         JSON.stringify(
             {
                 timestamp,
                 type,
+                source: source || 'unknown',
                 bufferSize: buffer.length,
                 analysis,
                 format: {
@@ -131,5 +203,10 @@ function saveDebugAudio(buffer, type, timestamp = Date.now()) {
 module.exports = {
     pcmToWav,
     analyzeAudioBuffer,
+    analyzeAudioBufferWithSource,
+    detectVoiceActivity,
     saveDebugAudio,
+    AUDIO_SOURCES,
+    VAD_CONFIG,
+    SPEAKER_VAD_CONFIG,
 };

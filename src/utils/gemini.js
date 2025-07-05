@@ -1,7 +1,7 @@
 const { GoogleGenAI } = require('@google/genai');
 const { BrowserWindow, ipcMain } = require('electron');
 const { spawn } = require('child_process');
-const { saveDebugAudio } = require('../audioUtils');
+const { saveDebugAudio, AUDIO_SOURCES, analyzeAudioBufferWithSource, detectVoiceActivity } = require('../audioUtils');
 const { getSystemPrompt } = require('./prompts');
 
 // Conversation tracking variables
@@ -13,6 +13,17 @@ let isInitializingSession = false;
 // Audio capture variables
 let systemAudioProc = null;
 let messageBuffer = '';
+
+// Dual audio management
+let micAudioProcessor = null;
+let micAudioContext = null;
+let transcriptionHistory = [];
+let lastAudioSource = AUDIO_SOURCES.INTERVIEWER; // Track the last audio source
+let audioSourceQueue = []; // Queue to track audio chunks and their sources sent
+let lastTranscriptionTime = Date.now();
+const TRANSCRIPTION_WINDOW_MS = 4 * 60 * 1000; // 4 minutes
+const CONTEXT_SEND_INTERVAL_MS = 30 * 1000; // Send context every 30 seconds
+let expectingManualResponse = false; // Track if we're expecting a response from Process button
 
 // Reconnection tracking variables
 let reconnectionAttempts = 0;
@@ -33,6 +44,83 @@ function initializeNewSession() {
     currentTranscription = '';
     conversationHistory = [];
     console.log('New conversation session started:', currentSessionId);
+}
+
+// Enhanced transcription management with source tagging
+function addTranscription(text, source, timestamp = Date.now()) {
+    const transcriptionEntry = {
+        timestamp,
+        text: text.trim(),
+        source, // 'interviewer' or 'interviewee'
+        sessionId: currentSessionId
+    };
+    
+    transcriptionHistory.push(transcriptionEntry);
+    
+    // Clean old transcriptions (keep only last 4 minutes)
+    const cutoffTime = timestamp - TRANSCRIPTION_WINDOW_MS;
+    transcriptionHistory = transcriptionHistory.filter(entry => entry.timestamp > cutoffTime);
+    
+    const speakerLabel = source === AUDIO_SOURCES.INTERVIEWER ? 'Interviewer says' : 'Interviewee says';
+    console.log(`${speakerLabel}: ${text.substring(0, 50)}...`);
+    
+    // Send to renderer for display with proper labeling
+    sendToRenderer('transcription-update', {
+        entry: transcriptionEntry,
+        history: transcriptionHistory,
+        label: speakerLabel
+    });
+}
+
+function getRecentTranscriptions(windowMs = TRANSCRIPTION_WINDOW_MS) {
+    const cutoffTime = Date.now() - windowMs;
+    return transcriptionHistory
+        .filter(entry => entry.timestamp > cutoffTime)
+        .sort((a, b) => a.timestamp - b.timestamp);
+}
+
+function determineTranscriptionSource() {
+    // Look at recent audio chunks (last 5 seconds) to determine most likely source
+    const recentTime = Date.now() - 5000; // 5 seconds ago
+    const recentChunks = audioSourceQueue.filter(chunk => chunk.timestamp > recentTime);
+    
+    if (recentChunks.length === 0) {
+        // Fallback to lastAudioSource if no recent chunks
+        return lastAudioSource;
+    }
+    
+    // Count chunks by source
+    const sourceCounts = {
+        [AUDIO_SOURCES.INTERVIEWER]: 0,
+        [AUDIO_SOURCES.INTERVIEWEE]: 0
+    };
+    
+    recentChunks.forEach(chunk => {
+        sourceCounts[chunk.source]++;
+    });
+    
+    // Return the source with more recent activity, or the most recent if tied
+    if (sourceCounts[AUDIO_SOURCES.INTERVIEWEE] > sourceCounts[AUDIO_SOURCES.INTERVIEWER]) {
+        return AUDIO_SOURCES.INTERVIEWEE;
+    } else if (sourceCounts[AUDIO_SOURCES.INTERVIEWER] > sourceCounts[AUDIO_SOURCES.INTERVIEWEE]) {
+        return AUDIO_SOURCES.INTERVIEWER;
+    } else {
+        // If tied, use the most recent chunk's source
+        return recentChunks[recentChunks.length - 1]?.source || lastAudioSource;
+    }
+}
+
+function formatTranscriptionsForContext() {
+    const recent = getRecentTranscriptions();
+    if (recent.length === 0) return '';
+    
+    const formatted = recent.map(entry => {
+        const timeAgo = Math.floor((Date.now() - entry.timestamp) / 1000);
+        const speaker = entry.source === AUDIO_SOURCES.INTERVIEWER ? 'Interviewer' : 'Interviewee';
+        return `[${timeAgo}s ago] ${speaker}: ${entry.text}`;
+    }).join('\n');
+    
+    return `Recent conversation context (last 4 minutes):\n${formatted}\n\nPlease provide a concise answer to the most recent question from the interviewer.`;
 }
 
 function saveConversationTurn(transcription, aiResponse) {
@@ -235,13 +323,21 @@ async function initializeGeminiSession(apiKey, customPrompt = '', profile = 'int
                 onmessage: function (message) {
                     console.log('----------------', message);
 
-                    // Handle transcription input
+                    // Handle transcription input with source detection - just build context, don't respond
                     if (message.serverContent?.inputTranscription?.text) {
-                        currentTranscription += message.serverContent.inputTranscription.text;
+                        const transcriptionText = message.serverContent.inputTranscription.text;
+                        
+                        // Use improved source detection instead of lastAudioSource
+                        const source = determineTranscriptionSource();
+                        addTranscription(transcriptionText, source);
+                        
+                        // Just log transcription, don't trigger automatic responses
+                        const speakerLabel = source === AUDIO_SOURCES.INTERVIEWER ? 'Interviewer says' : 'Interviewee says';
+                        console.log(`${speakerLabel}: ${transcriptionText}`);
                     }
 
-                    // Handle AI model response
-                    if (message.serverContent?.modelTurn?.parts) {
+                    // Handle AI model response (only when manually triggered via Process button)
+                    if (message.serverContent?.modelTurn?.parts && expectingManualResponse) {
                         for (const part of message.serverContent.modelTurn.parts) {
                             if (part.text) {
                                 messageBuffer += part.text;
@@ -251,14 +347,21 @@ async function initializeGeminiSession(apiKey, customPrompt = '', profile = 'int
                         }
                     }
 
-                    if (message.serverContent?.generationComplete) {
-                        // Save conversation turn when we have both transcription and AI response
-                        if (currentTranscription && messageBuffer) {
-                            saveConversationTurn(currentTranscription, messageBuffer);
-                            currentTranscription = ''; // Reset for next turn
+                    if (message.serverContent?.generationComplete && expectingManualResponse) {
+                        // Only save conversation turn if we have a manual response (from Process button)
+                        if (messageBuffer) {
+                            // Get recent transcriptions to save as context
+                            const recentTranscriptions = getRecentTranscriptions(60000); // Last minute
+                            const transcriptionContext = recentTranscriptions.map(entry => {
+                                const speaker = entry.source === AUDIO_SOURCES.INTERVIEWER ? 'Interviewer' : 'Interviewee';
+                                return `${speaker}: ${entry.text}`;
+                            }).join('\n');
+                            
+                            saveConversationTurn(transcriptionContext, messageBuffer);
                         }
 
                         messageBuffer = '';
+                        expectingManualResponse = false; // Reset the flag
                         sendToRenderer('response-complete');
                     }
 
@@ -317,7 +420,16 @@ async function initializeGeminiSession(apiKey, customPrompt = '', profile = 'int
             config: {
                 responseModalities: ['TEXT'],
                 tools: enabledTools,
-                inputAudioTranscription: {},
+                inputAudioTranscription: {
+                    model: 'models/gemini-2.5-flash',
+                    enableAutomaticPunctuation: true,
+                    enableWordTimeOffsets: true,  // Enable for better transcription continuity
+                    enableWordConfidence: true,   // Enable for better accuracy
+                    maxAlternatives: 3,           // Increase for better accuracy
+                    profanityFilter: false,       // Disable for faster processing
+                    enableSpeakerDiarization: false, // Disable for faster processing
+                    languageCode: language
+                },
                 contextWindowCompression: { slidingWindow: {} },
                 speechConfig: { languageCode: language },
                 systemInstruction: {
@@ -399,7 +511,7 @@ async function startMacOSAudioCapture(geminiSessionRef) {
 
     console.log('SystemAudioDump started with PID:', systemAudioProc.pid);
 
-    const CHUNK_DURATION = 0.1;
+    const CHUNK_DURATION = 0.08; // 80ms chunks for speaker audio (balanced)
     const SAMPLE_RATE = 24000;
     const BYTES_PER_SAMPLE = 2;
     const CHANNELS = 2;
@@ -416,11 +528,11 @@ async function startMacOSAudioCapture(geminiSessionRef) {
 
             const monoChunk = CHANNELS === 2 ? convertStereoToMono(chunk) : chunk;
             const base64Data = monoChunk.toString('base64');
-            sendAudioToGemini(base64Data, geminiSessionRef);
+            sendAudioToGemini(base64Data, geminiSessionRef, AUDIO_SOURCES.INTERVIEWER);
 
             if (process.env.DEBUG_AUDIO) {
-                console.log(`Processed audio chunk: ${chunk.length} bytes`);
-                saveDebugAudio(monoChunk, 'system_audio');
+                console.log(`Processed interviewer audio chunk: ${chunk.length} bytes`);
+                saveDebugAudio(monoChunk, 'system_audio', Date.now(), AUDIO_SOURCES.INTERVIEWER);
             }
         }
 
@@ -467,20 +579,75 @@ function stopMacOSAudioCapture() {
     }
 }
 
-async function sendAudioToGemini(base64Data, geminiSessionRef) {
+async function sendAudioToGemini(base64Data, geminiSessionRef, source = AUDIO_SOURCES.INTERVIEWER) {
     if (!geminiSessionRef.current) return;
 
     try {
-        process.stdout.write('.');
+        // Track the audio source in queue for transcription labeling
+        const audioChunk = {
+            timestamp: Date.now(),
+            source: source,
+            size: base64Data.length
+        };
+        audioSourceQueue.push(audioChunk);
+        
+        // Keep queue size manageable (last 50 chunks)
+        if (audioSourceQueue.length > 50) {
+            audioSourceQueue.shift();
+        }
+        
+        // Also update lastAudioSource as fallback
+        lastAudioSource = source;
+        
+        const symbol = source === AUDIO_SOURCES.INTERVIEWER ? '.' : 'i';
+        process.stdout.write(symbol);
+        
         await geminiSessionRef.current.sendRealtimeInput({
             audio: {
                 data: base64Data,
                 mimeType: 'audio/pcm;rate=24000',
             },
         });
+        
+        if (process.env.DEBUG_AUDIO) {
+            const buffer = Buffer.from(base64Data, 'base64');
+            saveDebugAudio(buffer, `audio_${source}`, Date.now(), source);
+        }
     } catch (error) {
-        console.error('Error sending audio to Gemini:', error);
+        console.error(`Error sending ${source} audio to Gemini:`, error);
     }
+}
+
+// Start microphone capture for interviewee audio (placeholder - actual capture happens in renderer)
+async function startMicrophoneCapture(geminiSessionRef) {
+    console.log('Microphone capture will be handled by renderer process');
+    // Microphone capture is handled entirely in the renderer process
+    // This function exists for IPC compatibility
+    return true;
+}
+
+// Stop microphone capture
+function stopMicrophoneCapture() {
+    if (micAudioProcessor) {
+        console.log('Stopping microphone capture...');
+        micAudioProcessor.disconnect();
+        micAudioProcessor = null;
+    }
+    
+    if (micAudioContext) {
+        micAudioContext.close();
+        micAudioContext = null;
+    }
+}
+
+// Helper function to convert Float32Array to Int16Array
+function convertFloat32ToInt16(float32Array) {
+    const int16Array = new Int16Array(float32Array.length);
+    for (let i = 0; i < float32Array.length; i++) {
+        const s = Math.max(-1, Math.min(1, float32Array[i]));
+        int16Array[i] = s < 0 ? s * 0x8000 : s * 0x7fff;
+    }
+    return int16Array;
 }
 
 function setupGeminiIpcHandlers(geminiSessionRef) {
@@ -495,13 +662,16 @@ function setupGeminiIpcHandlers(geminiSessionRef) {
         return false;
     });
 
-    ipcMain.handle('send-audio-content', async (event, { data, mimeType }) => {
+    ipcMain.handle('send-audio-content', async (event, { data, mimeType, source }) => {
         if (!geminiSessionRef.current) return { success: false, error: 'No active Gemini session' };
         try {
-            process.stdout.write('.');
-            await geminiSessionRef.current.sendRealtimeInput({
-                audio: { data: data, mimeType: mimeType },
-            });
+            // Determine the audio source
+            const audioSource = source === 'interviewee' ? AUDIO_SOURCES.INTERVIEWEE : AUDIO_SOURCES.INTERVIEWER;
+            
+            // Send audio with source tagging (data is already base64)
+            await sendAudioToGemini(data, geminiSessionRef, audioSource);
+            
+            process.stdout.write(audioSource === AUDIO_SOURCES.INTERVIEWEE ? 'i' : '.');
             return { success: true };
         } catch (error) {
             console.error('Error sending audio:', error);
@@ -571,6 +741,26 @@ function setupGeminiIpcHandlers(geminiSessionRef) {
         }
     });
 
+    ipcMain.handle('start-microphone-audio', async event => {
+        try {
+            const success = await startMicrophoneCapture(geminiSessionRef);
+            return { success };
+        } catch (error) {
+            console.error('Error starting microphone capture:', error);
+            return { success: false, error: error.message };
+        }
+    });
+
+    ipcMain.handle('stop-microphone-audio', async event => {
+        try {
+            stopMicrophoneCapture();
+            return { success: true };
+        } catch (error) {
+            console.error('Error stopping microphone capture:', error);
+            return { success: false, error: error.message };
+        }
+    });
+
     ipcMain.handle('stop-macos-audio', async event => {
         try {
             stopMacOSAudioCapture();
@@ -584,9 +774,13 @@ function setupGeminiIpcHandlers(geminiSessionRef) {
     ipcMain.handle('close-session', async event => {
         try {
             stopMacOSAudioCapture();
+            stopMicrophoneCapture();
 
             // Clear session params to prevent reconnection when user closes session
             lastSessionParams = null;
+
+            // Clear transcription history
+            transcriptionHistory = [];
 
             // Cleanup any pending resources and stop audio/video capture
             if (geminiSessionRef.current) {
@@ -633,12 +827,83 @@ function setupGeminiIpcHandlers(geminiSessionRef) {
         }
     });
 
+    ipcMain.handle('process-all-context', async (event) => {
+        if (!geminiSessionRef.current) {
+            return { success: false, error: 'No active Gemini session' };
+        }
+
+        try {
+            console.log('Processing all context manually...');
+            
+            // Get recent transcriptions (last 10 minutes for more context)
+            const recentTranscriptions = getRecentTranscriptions(10 * 60 * 1000);
+            
+            // Build context with proper speaker labels
+            let contextMessage = '';
+            let wordCount = 0;
+            const maxWords = 2000;
+            
+            if (recentTranscriptions.length > 0) {
+                // Format transcriptions with proper labels
+                const formattedTranscriptions = recentTranscriptions.map(entry => {
+                    const timeAgo = Math.floor((Date.now() - entry.timestamp) / 1000);
+                    const speaker = entry.source === AUDIO_SOURCES.INTERVIEWER ? 'Interviewer says' : 'Interviewee says';
+                    return `[${timeAgo}s ago] ${speaker}: ${entry.text}`;
+                });
+                
+                // Limit context to 1000-2000 words, prioritizing most recent
+                let selectedTranscriptions = [];
+                for (let i = formattedTranscriptions.length - 1; i >= 0; i--) {
+                    const transcription = formattedTranscriptions[i];
+                    const transcriptionWords = transcription.split(' ').length;
+                    
+                    if (wordCount + transcriptionWords <= maxWords) {
+                        selectedTranscriptions.unshift(transcription);
+                        wordCount += transcriptionWords;
+                    } else {
+                        break;
+                    }
+                }
+                
+                if (selectedTranscriptions.length > 0) {
+                    contextMessage += `Recent conversation context (last ${Math.floor(wordCount)} words):\n${selectedTranscriptions.join('\n')}\n\n`;
+                }
+            }
+            
+            // Find the most recent question from interviewer
+            const recentQuestions = recentTranscriptions
+                .filter(entry => entry.source === AUDIO_SOURCES.INTERVIEWER)
+                .slice(-3); // Last 3 interviewer statements
+            
+            if (recentQuestions.length > 0) {
+                const lastQuestion = recentQuestions[recentQuestions.length - 1];
+                contextMessage += `Most recent question to focus on: "${lastQuestion.text}"\n\n`;
+            }
+            
+            if (contextMessage.trim().length === 0) {
+                contextMessage = 'No recent conversation context available. Please analyze the current screen content and provide assistance based on what you can see.\n\n';
+            }
+            
+            contextMessage += 'Based on the above conversation context and current screen capture analysis (if available), please provide a comprehensive and helpful response. Focus on answering the most recent question from the interviewer.';
+            
+            console.log(`Sending manual context processing request to Gemini (${wordCount} words)`);
+            expectingManualResponse = true; // Set flag to process the upcoming response
+            await geminiSessionRef.current.sendRealtimeInput({ text: contextMessage });
+            
+            return { success: true, wordCount };
+        } catch (error) {
+            console.error('Error processing context:', error);
+            return { success: false, error: error.message };
+        }
+    });
+
     ipcMain.handle('reset-context-and-reinitialize', async (event) => {
         try {
             console.log('Reset context and reinitialize session requested');
             
             // Stop any existing audio capture
             stopMacOSAudioCapture();
+            stopMicrophoneCapture();
             
             // Close existing session if it exists
             if (geminiSessionRef.current) {
@@ -653,21 +918,55 @@ function setupGeminiIpcHandlers(geminiSessionRef) {
             // Initialize a new conversation session (reset context)
             initializeNewSession();
             
-            // Clear any message buffer
+            // Clear transcription history and buffers
+            transcriptionHistory = [];
+            audioSourceQueue = []; // Clear audio source queue
             messageBuffer = '';
             currentTranscription = '';
+            expectingManualResponse = false; // Reset manual response flag
             
-            // Send status update to renderer
-            sendToRenderer('update-status', 'Context reset - Ready to reinitialize');
+            // Reinitialize Gemini session with updated system prompt if we have stored params
+            if (lastSessionParams) {
+                console.log('Reinitializing Gemini session with updated system prompt...');
+                const session = await initializeGeminiSession(
+                    lastSessionParams.apiKey,
+                    lastSessionParams.customPrompt,
+                    lastSessionParams.profile,
+                    lastSessionParams.language,
+                    false // Not a reconnection, force new session
+                );
+                if (session) {
+                    geminiSessionRef.current = session;
+                    sendToRenderer('update-status', 'Session reinitialized with updated settings');
+                } else {
+                    sendToRenderer('update-status', 'Context reset - Ready to reinitialize');
+                }
+            } else {
+                sendToRenderer('update-status', 'Context reset - Ready to reinitialize');
+            }
+            
             sendToRenderer('context-reset-complete');
             
-            console.log('Context reset completed successfully');
-            return { success: true, sessionId: currentSessionId };
+            console.log('Context reset and reinitialization completed successfully');
+             return { success: true, sessionId: currentSessionId };
+         } catch (error) {
+             console.error('Error resetting context:', error);
+             return { success: false, error: error.message };
+         }
+     });
+
+    // Add handler to get recent transcriptions
+    ipcMain.handle('get-recent-transcriptions', async (event) => {
+        try {
+            const recent = getRecentTranscriptions();
+            return { success: true, transcriptions: recent };
         } catch (error) {
-            console.error('Error resetting context:', error);
+            console.error('Error getting recent transcriptions:', error);
             return { success: false, error: error.message };
         }
     });
+
+    // Periodic context updates removed - now using manual Process button only
 }
 
 module.exports = {
@@ -686,4 +985,11 @@ module.exports = {
     sendAudioToGemini,
     setupGeminiIpcHandlers,
     attemptReconnection,
+    // New dual audio functions
+    addTranscription,
+    getRecentTranscriptions,
+    formatTranscriptionsForContext,
+    startMicrophoneCapture,
+    stopMicrophoneCapture,
+    convertFloat32ToInt16,
 };

@@ -6,10 +6,23 @@ let screenshotInterval = null;
 let audioContext = null;
 let audioProcessor = null;
 let micAudioProcessor = null;
+let micAudioContext = null;
+let micStream = null;
 let audioBuffer = [];
+let isMicrophoneCaptureActive = false;
 const SAMPLE_RATE = 24000;
-const AUDIO_CHUNK_DURATION = 0.1; // seconds
-const BUFFER_SIZE = 4096; // Increased buffer size for smoother audio
+const AUDIO_CHUNK_DURATION = 0.08; // Balanced for quality vs latency
+const BUFFER_SIZE = 2048; // Balanced buffer size for microphone quality
+
+// Microphone settings aligned with speaker audio for consistency
+const MIC_SAMPLE_RATE = 24000; // Same as SAMPLE_RATE for consistency
+const MIC_CHUNK_DURATION = 0.2; // Longer chunks for better transcription continuity
+const MIC_BUFFER_SIZE = 1024; // Match speaker audio buffer size for consistency
+
+// Real-time audio optimization:
+// - Different settings for mic vs speaker audio
+// - Non-blocking audio processing with setImmediate
+// - Optimized Gemini transcription settings
 
 let hiddenVideo = null;
 let offscreenCanvas = null;
@@ -126,6 +139,28 @@ function convertFloat32ToInt16(float32Array) {
         int16Array[i] = s < 0 ? s * 0x8000 : s * 0x7fff;
     }
     return int16Array;
+}
+
+// Voice Activity Detection helper functions
+function calculateRMS(float32Array) {
+    let sum = 0;
+    for (let i = 0; i < float32Array.length; i++) {
+        sum += float32Array[i] * float32Array[i];
+    }
+    return Math.sqrt(sum / float32Array.length);
+}
+
+function calculateSilencePercentage(float32Array) {
+    let silentSamples = 0;
+    const threshold = 0.005; // More sensitive threshold for microphone audio
+    
+    for (let i = 0; i < float32Array.length; i++) {
+        if (Math.abs(float32Array[i]) < threshold) {
+            silentSamples++;
+        }
+    }
+    
+    return (silentSamples / float32Array.length) * 100;
 }
 
 function arrayBufferToBase64(buffer) {
@@ -275,28 +310,40 @@ async function startCapture(screenshotIntervalSeconds = 5, imageQuality = 'mediu
 }
 
 function setupLinuxMicProcessing(micStream) {
-    // Setup microphone audio processing for Linux
-    const micAudioContext = new AudioContext({ sampleRate: SAMPLE_RATE });
+    // Setup microphone audio processing for Linux with mic-specific settings
+    const micAudioContext = new AudioContext({ sampleRate: MIC_SAMPLE_RATE });
     const micSource = micAudioContext.createMediaStreamSource(micStream);
-    const micProcessor = micAudioContext.createScriptProcessor(BUFFER_SIZE, 1, 1);
+    const micProcessor = micAudioContext.createScriptProcessor(MIC_BUFFER_SIZE, 1, 1);
 
     let audioBuffer = [];
-    const samplesPerChunk = SAMPLE_RATE * AUDIO_CHUNK_DURATION;
+    const samplesPerChunk = MIC_SAMPLE_RATE * MIC_CHUNK_DURATION;
 
-    micProcessor.onaudioprocess = async e => {
+    micProcessor.onaudioprocess = e => {
         const inputData = e.inputBuffer.getChannelData(0);
         audioBuffer.push(...inputData);
 
-        // Process audio in chunks
+        // Process audio immediately - direct like speaker audio
         while (audioBuffer.length >= samplesPerChunk) {
             const chunk = audioBuffer.splice(0, samplesPerChunk);
-            const pcmData16 = convertFloat32ToInt16(chunk);
-            const base64Data = arrayBufferToBase64(pcmData16.buffer);
-
-            await ipcRenderer.invoke('send-audio-content', {
-                data: base64Data,
-                mimeType: 'audio/pcm;rate=24000',
-            });
+            const float32Chunk = new Float32Array(chunk);
+            const pcmData16 = convertFloat32ToInt16(float32Chunk);
+            
+            // Apply Voice Activity Detection to filter silent chunks
+            const rmsValue = calculateRMS(float32Chunk);
+            const silencePercentage = calculateSilencePercentage(float32Chunk);
+            
+            // Only send audio if it contains voice activity (same thresholds as speaker audio)
+            if (rmsValue > 0.005 && silencePercentage < 70) {
+                const base64Data = arrayBufferToBase64(pcmData16.buffer);
+                
+                ipcRenderer.invoke('send-audio-content', {
+                    data: base64Data,
+                    mimeType: 'audio/pcm;rate=24000',
+                    source: 'interviewee' // Microphone audio
+                }).catch(error => {
+                    console.warn('Linux microphone audio send failed:', error.message);
+                });
+            }
         }
     };
 
@@ -305,6 +352,134 @@ function setupLinuxMicProcessing(micStream) {
 
     // Store processor reference for cleanup
     audioProcessor = micProcessor;
+}
+
+// New function to start microphone capture independently
+async function startMicrophoneCapture() {
+    if (isMicrophoneCaptureActive) {
+        console.log('Microphone capture already active');
+        return { success: true };
+    }
+
+    try {
+        // Get microphone access with optimized settings for transcription
+        micStream = await navigator.mediaDevices.getUserMedia({
+            audio: {
+                sampleRate: MIC_SAMPLE_RATE, // Use exact microphone sample rate
+                channelCount: 1,
+                echoCancellation: true,  // Enable for better speech clarity
+                noiseSuppression: true,  // Enable to reduce background noise
+                autoGainControl: true,   // Enable to normalize volume levels
+                latency: 0.01,          // Request low latency
+                volume: 1.0             // Maximum volume
+            },
+            video: false,
+        });
+
+        // Setup audio processing with mic-specific settings
+        micAudioContext = new AudioContext({ sampleRate: MIC_SAMPLE_RATE });
+        const micSource = micAudioContext.createMediaStreamSource(micStream);
+        micAudioProcessor = micAudioContext.createScriptProcessor(MIC_BUFFER_SIZE, 1, 1);
+
+        let micAudioBuffer = [];
+        let micSendBuffer = []; // Buffer to accumulate chunks before sending
+        const samplesPerChunk = MIC_SAMPLE_RATE * MIC_CHUNK_DURATION;
+        const SEND_BUFFER_DURATION = 3.0; // Accumulate 3 seconds of audio before sending
+        const chunksPerSend = Math.ceil(SEND_BUFFER_DURATION / MIC_CHUNK_DURATION);
+        let chunkCount = 0;
+        let lastSendTime = Date.now();
+        const SEND_TIMEOUT = 4000; // Send after 4 seconds even if buffer not full
+
+        micAudioProcessor.onaudioprocess = e => {
+            const inputData = e.inputBuffer.getChannelData(0);
+            micAudioBuffer.push(...inputData);
+
+            // Process audio in chunks
+            while (micAudioBuffer.length >= samplesPerChunk) {
+                const chunk = micAudioBuffer.splice(0, samplesPerChunk);
+                const float32Chunk = new Float32Array(chunk);
+                
+                // Always add chunk to send buffer to maintain continuity
+                micSendBuffer.push(...chunk);
+                chunkCount++;
+                
+                // Apply Voice Activity Detection for logging only
+                const rmsValue = calculateRMS(float32Chunk);
+                const silencePercentage = calculateSilencePercentage(float32Chunk);
+                
+                // Debug logging for audio processing (reduced frequency)
+                if (Math.random() < 0.1) { // 10% of chunks
+                    console.log(`Mic Audio - RMS: ${rmsValue.toFixed(6)}, Silence: ${silencePercentage.toFixed(1)}%, Buffered: ${chunkCount}/${chunksPerSend}`);
+                }
+                
+                // Send accumulated buffer when we have enough chunks or after timeout
+                const now = Date.now();
+                const shouldSendByTimeout = micSendBuffer.length > 0 && (now - lastSendTime) > SEND_TIMEOUT;
+                
+                if (chunkCount >= chunksPerSend || shouldSendByTimeout) {
+                    if (micSendBuffer.length > 0) {
+                        const float32SendChunk = new Float32Array(micSendBuffer);
+                        const pcmData16 = convertFloat32ToInt16(float32SendChunk);
+                        const base64Data = arrayBufferToBase64(pcmData16.buffer);
+                        
+                        console.log(`Sending accumulated mic audio: ${micSendBuffer.length} samples (${(micSendBuffer.length / MIC_SAMPLE_RATE).toFixed(2)}s)`);
+                        
+                        ipcRenderer.invoke('send-audio-content', {
+                            data: base64Data,
+                            mimeType: 'audio/pcm;rate=24000',
+                            source: 'interviewee' // Microphone audio
+                        }).catch(error => {
+                            console.warn('Microphone audio send failed:', error.message);
+                        });
+                        
+                        // Reset buffers and timer
+                        micSendBuffer = [];
+                        chunkCount = 0;
+                        lastSendTime = now;
+                    }
+                }
+            }
+        };
+
+        micSource.connect(micAudioProcessor);
+        micAudioProcessor.connect(micAudioContext.destination);
+
+        isMicrophoneCaptureActive = true;
+        console.log('Microphone capture started successfully');
+        
+        return { success: true };
+    } catch (error) {
+        console.error('Error starting microphone capture:', error);
+        return { success: false, error: error.message };
+    }
+}
+
+// New function to stop microphone capture
+async function stopMicrophoneCapture() {
+    try {
+        if (micAudioProcessor) {
+            micAudioProcessor.disconnect();
+            micAudioProcessor = null;
+        }
+
+        if (micAudioContext) {
+            await micAudioContext.close();
+            micAudioContext = null;
+        }
+
+        if (micStream) {
+            micStream.getTracks().forEach(track => track.stop());
+            micStream = null;
+        }
+
+        isMicrophoneCaptureActive = false;
+        console.log('Microphone capture stopped');
+        
+        return { success: true };
+    } catch (error) {
+        console.error('Error stopping microphone capture:', error);
+        return { success: false, error: error.message };
+    }
 }
 
 function setupWindowsLoopbackProcessing() {
@@ -316,22 +491,27 @@ function setupWindowsLoopbackProcessing() {
     let audioBuffer = [];
     const samplesPerChunk = SAMPLE_RATE * AUDIO_CHUNK_DURATION;
 
-    audioProcessor.onaudioprocess = async e => {
-        const inputData = e.inputBuffer.getChannelData(0);
-        audioBuffer.push(...inputData);
+    audioProcessor.onaudioprocess = e => {
+            const inputData = e.inputBuffer.getChannelData(0);
+            audioBuffer.push(...inputData);
 
-        // Process audio in chunks
-        while (audioBuffer.length >= samplesPerChunk) {
-            const chunk = audioBuffer.splice(0, samplesPerChunk);
-            const pcmData16 = convertFloat32ToInt16(chunk);
-            const base64Data = arrayBufferToBase64(pcmData16.buffer);
+            // Process audio immediately - direct like microphone audio
+            while (audioBuffer.length >= samplesPerChunk) {
+                const chunk = audioBuffer.splice(0, samplesPerChunk);
+                const float32Chunk = new Float32Array(chunk);
+                const pcmData16 = convertFloat32ToInt16(float32Chunk);
+                const base64Data = arrayBufferToBase64(pcmData16.buffer);
 
-            await ipcRenderer.invoke('send-audio-content', {
-                data: base64Data,
-                mimeType: 'audio/pcm;rate=24000',
-            });
-        }
-    };
+                // Send immediately without setImmediate - direct like microphone audio
+                ipcRenderer.invoke('send-audio-content', {
+                    data: base64Data,
+                    mimeType: 'audio/pcm;rate=24000',
+                    source: 'interviewer' // System/speaker audio (loopback)
+                }).catch(error => {
+                    console.warn('Audio send failed:', error.message);
+                });
+            }
+        };
 
     source.connect(audioProcessor);
     audioProcessor.connect(audioContext.destination);
@@ -645,12 +825,19 @@ function handleShortcut(shortcutKey) {
     }
 }
 
+// Expose microphone functions to global window object
+window.startMicrophoneCapture = startMicrophoneCapture;
+window.stopMicrophoneCapture = stopMicrophoneCapture;
+
 window.cheddar = {
     initializeGemini,
     startCapture,
     stopCapture,
     sendTextMessage,
     handleShortcut,
+    // Microphone functions
+    startMicrophoneCapture,
+    stopMicrophoneCapture,
     // Conversation history functions
     getAllConversationSessions,
     getConversationSession,
