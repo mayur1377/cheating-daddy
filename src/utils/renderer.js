@@ -367,7 +367,7 @@ async function startMicrophoneCapture() {
             audio: {
                 sampleRate: MIC_SAMPLE_RATE, // Use exact microphone sample rate
                 channelCount: 1,
-                echoCancellation: true,  // Enable for better speech clarity
+                echoCancellation: true,
                 noiseSuppression: true,  // Enable to reduce background noise
                 autoGainControl: true,   // Enable to normalize volume levels
                 latency: 0.01,          // Request low latency
@@ -407,11 +407,6 @@ async function startMicrophoneCapture() {
                 const rmsValue = calculateRMS(float32Chunk);
                 const silencePercentage = calculateSilencePercentage(float32Chunk);
                 
-                // Debug logging for audio processing (reduced frequency)
-                if (Math.random() < 0.1) { // 10% of chunks
-                    console.log(`Mic Audio - RMS: ${rmsValue.toFixed(6)}, Silence: ${silencePercentage.toFixed(1)}%, Buffered: ${chunkCount}/${chunksPerSend}`);
-                }
-                
                 // Send accumulated buffer when we have enough chunks or after timeout
                 const now = Date.now();
                 const shouldSendByTimeout = micSendBuffer.length > 0 && (now - lastSendTime) > SEND_TIMEOUT;
@@ -421,8 +416,6 @@ async function startMicrophoneCapture() {
                         const float32SendChunk = new Float32Array(micSendBuffer);
                         const pcmData16 = convertFloat32ToInt16(float32SendChunk);
                         const base64Data = arrayBufferToBase64(pcmData16.buffer);
-                        
-                        console.log(`Sending accumulated mic audio: ${micSendBuffer.length} samples (${(micSendBuffer.length / MIC_SAMPLE_RATE).toFixed(2)}s)`);
                         
                         ipcRenderer.invoke('send-audio-content', {
                             data: base64Data,

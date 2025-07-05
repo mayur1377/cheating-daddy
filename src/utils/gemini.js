@@ -423,11 +423,11 @@ async function initializeGeminiSession(apiKey, customPrompt = '', profile = 'int
                 inputAudioTranscription: {
                     model: 'models/gemini-2.5-flash',
                     enableAutomaticPunctuation: true,
-                    enableWordTimeOffsets: true,  // Enable for better transcription continuity
-                    enableWordConfidence: true,   // Enable for better accuracy
-                    maxAlternatives: 3,           // Increase for better accuracy
-                    profanityFilter: false,       // Disable for faster processing
-                    enableSpeakerDiarization: false, // Disable for faster processing
+                    enableWordTimeOffsets: true,
+                    enableWordConfidence: true,
+                    maxAlternatives: 3,
+                    profanityFilter: false,
+                    enableSpeakerDiarization: false,
                     languageCode: language
                 },
                 contextWindowCompression: { slidingWindow: {} },
