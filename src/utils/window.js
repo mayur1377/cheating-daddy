@@ -144,6 +144,7 @@ function getDefaultKeybinds() {
         scrollUp: isMac ? 'Cmd+Shift+Up' : 'Ctrl+Shift+Up',
         scrollDown: isMac ? 'Cmd+Shift+Down' : 'Ctrl+Shift+Down',
         resetContext: isMac ? 'Cmd+G' : 'Ctrl+G',
+        toggleMicrophone: isMac ? 'Cmd+Shift+M' : 'Ctrl+Shift+M',
     };
 }
 
@@ -325,6 +326,24 @@ function updateGlobalShortcuts(keybinds, mainWindow, sendToRenderer, geminiSessi
             console.log(`Registered resetContext: ${keybinds.resetContext}`);
         } catch (error) {
             console.error(`Failed to register resetContext (${keybinds.resetContext}):`, error);
+        }
+    }
+
+    // Register toggle microphone shortcut
+    if (keybinds.toggleMicrophone) {
+        try {
+            globalShortcut.register(keybinds.toggleMicrophone, async () => {
+                console.log('Toggle microphone shortcut triggered');
+                try {
+                    // Send toggle microphone message to renderer
+                    sendToRenderer('toggle-microphone-triggered');
+                } catch (error) {
+                    console.error('Error triggering microphone toggle:', error);
+                }
+            });
+            console.log(`Registered toggleMicrophone: ${keybinds.toggleMicrophone}`);
+        } catch (error) {
+            console.error(`Failed to register toggleMicrophone (${keybinds.toggleMicrophone}):`, error);
         }
     }
 }

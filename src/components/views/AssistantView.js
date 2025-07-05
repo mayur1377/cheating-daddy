@@ -364,6 +364,8 @@ export class AssistantView extends LitElement {
             width: 14px;
             height: 14px;
         }
+
+
     `;
 
     static properties = {
@@ -569,17 +571,29 @@ export class AssistantView extends LitElement {
         if (this.isMicrophoneActive) {
             // Stop microphone capture
             if (window.stopMicrophoneCapture) {
-                await window.stopMicrophoneCapture();
+                const result = await window.stopMicrophoneCapture();
+                if (result && result.success) {
+                    this.isMicrophoneActive = false;
+                } else {
+                    console.error('Failed to stop microphone:', result?.error || 'Unknown error');
+                    return; // Don't dispatch event if failed
+                }
             }
-            this.isMicrophoneActive = false;
         } else {
             // Start microphone capture
             if (window.startMicrophoneCapture) {
                 try {
-                    await window.startMicrophoneCapture();
-                    this.isMicrophoneActive = true;
+                    const result = await window.startMicrophoneCapture();
+                    if (result && result.success) {
+                        this.isMicrophoneActive = true;
+                    } else {
+                        console.error('Failed to start microphone:', result?.error || 'Unknown error');
+                        alert('Failed to start microphone. Please check your microphone permissions and try again.');
+                        return; // Don't dispatch event if failed
+                    }
                 } catch (error) {
                     console.error('Failed to start microphone capture:', error);
+                    alert('Failed to start microphone. Please try again.');
                     return; // Don't dispatch event if failed
                 }
             }
@@ -622,6 +636,8 @@ export class AssistantView extends LitElement {
             }
         }, 0);
     }
+
+
 
     firstUpdated() {
         super.firstUpdated();

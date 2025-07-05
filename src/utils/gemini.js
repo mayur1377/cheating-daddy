@@ -321,7 +321,7 @@ async function initializeGeminiSession(apiKey, customPrompt = '', profile = 'int
                     sendToRenderer('update-status', 'Live session connected');
                 },
                 onmessage: function (message) {
-                    console.log('----------------', message);
+                    //console.log('----------------', message);
 
                     // Handle transcription input with source detection - just build context, don't respond
                     if (message.serverContent?.inputTranscription?.text) {
@@ -348,6 +348,12 @@ async function initializeGeminiSession(apiKey, customPrompt = '', profile = 'int
                     }
 
                     if (message.serverContent?.generationComplete && expectingManualResponse) {
+                        // Clear the response timeout since we got a response
+                        if (global.currentResponseTimeout) {
+                            clearTimeout(global.currentResponseTimeout);
+                            global.currentResponseTimeout = null;
+                        }
+                        
                         // Only save conversation turn if we have a manual response (from Process button)
                         if (messageBuffer) {
                             // Get recent transcriptions to save as context
@@ -423,9 +429,9 @@ async function initializeGeminiSession(apiKey, customPrompt = '', profile = 'int
                 inputAudioTranscription: {
                     model: 'models/gemini-2.5-flash',
                     enableAutomaticPunctuation: true,
-                    enableWordTimeOffsets: true,
-                    enableWordConfidence: true,
-                    maxAlternatives: 3,
+                    enableWordTimeOffsets: false, // Disabled to reduce processing time
+                    enableWordConfidence: false, // Disabled to reduce processing time
+                    maxAlternatives: 1, // Reduced from 3 to 1 for faster response
                     profanityFilter: false,
                     enableSpeakerDiarization: false,
                     languageCode: language
@@ -832,6 +838,12 @@ function setupGeminiIpcHandlers(geminiSessionRef) {
             return { success: false, error: 'No active Gemini session' };
         }
 
+        // Prevent multiple simultaneous requests
+        if (expectingManualResponse) {
+            console.log('Already waiting for a manual response, skipping request');
+            return { success: false, error: 'Already processing a request' };
+        }
+
         try {
             console.log('Processing all context manually...');
             
@@ -888,11 +900,25 @@ function setupGeminiIpcHandlers(geminiSessionRef) {
             
             console.log(`Sending manual context processing request to Gemini (${wordCount} words)`);
             expectingManualResponse = true; // Set flag to process the upcoming response
+            
+            // Set a timeout to reset the flag if no response comes back
+            const responseTimeout = setTimeout(() => {
+                if (expectingManualResponse) {
+                    console.warn('Timeout waiting for Gemini response, resetting expectingManualResponse flag');
+                    expectingManualResponse = false;
+                    sendToRenderer('update-status', 'Request timeout - ready for new requests');
+                }
+            }, 30000); // 30 second timeout
+            
+            // Store timeout ID to clear it if response comes back
+            global.currentResponseTimeout = responseTimeout;
+            
             await geminiSessionRef.current.sendRealtimeInput({ text: contextMessage });
             
             return { success: true, wordCount };
         } catch (error) {
             console.error('Error processing context:', error);
+            expectingManualResponse = false; // Reset flag on error
             return { success: false, error: error.message };
         }
     });

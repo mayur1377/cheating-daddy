@@ -582,6 +582,7 @@ export class CustomizeView extends LitElement {
             scrollUp: isMac ? 'Cmd+Shift+Up' : 'Ctrl+Shift+Up',
             scrollDown: isMac ? 'Cmd+Shift+Down' : 'Ctrl+Shift+Down',
             resetContext: isMac ? 'Cmd+G' : 'Ctrl+G',
+            toggleMicrophone: isMac ? 'Cmd+Shift+M' : 'Ctrl+Shift+M',
         };
     }
 
@@ -683,6 +684,11 @@ export class CustomizeView extends LitElement {
                 key: 'resetContext',
                 name: 'Reset Context',
                 description: 'Reset current context and reinitialize Gemini session',
+            },
+            {
+                key: 'toggleMicrophone',
+                name: 'Toggle Microphone',
+                description: 'Toggle microphone on/off for voice input',
             },
         ];
     }

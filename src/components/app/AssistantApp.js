@@ -170,6 +170,9 @@ export class AssistantApp extends LitElement {
             ipcRenderer.on('context-reset-complete', () => {
                 this.handleContextResetComplete();
             });
+            ipcRenderer.on('toggle-microphone-triggered', () => {
+                this.handleMicrophoneToggle();
+            });
         }
         // Add functions to window.cheddar for IPC callbacks
         this.setupCheddarCallbacks();
@@ -182,6 +185,9 @@ export class AssistantApp extends LitElement {
             ipcRenderer.removeAllListeners('update-response');
             ipcRenderer.removeAllListeners('update-status');
             ipcRenderer.removeAllListeners('click-through-toggled');
+            ipcRenderer.removeAllListeners('reset-context-triggered');
+            ipcRenderer.removeAllListeners('context-reset-complete');
+            ipcRenderer.removeAllListeners('toggle-microphone-triggered');
         }
     }
 
@@ -437,6 +443,52 @@ export class AssistantApp extends LitElement {
         console.log('Context reset completed');
         // Additional UI updates can be done here if needed
         this.requestUpdate();
+    }
+
+    // Microphone toggle event handler
+    async handleMicrophoneToggle() {
+        console.log('Microphone toggle shortcut triggered');
+        
+        // Only allow microphone toggle in assistant view
+        if (this.currentView !== 'assistant') {
+            console.log('Microphone toggle only available in assistant view');
+            return;
+        }
+        
+        try {
+            if (this.isMicrophoneActive) {
+                // Stop microphone capture
+                if (window.stopMicrophoneCapture) {
+                    const result = await window.stopMicrophoneCapture();
+                    if (result && result.success) {
+                        this.isMicrophoneActive = false;
+                        console.log('Microphone turned off via shortcut');
+                    } else {
+                        console.error('Failed to stop microphone:', result?.error || 'Unknown error');
+                    }
+                }
+            } else {
+                // Start microphone capture
+                if (window.startMicrophoneCapture) {
+                    const result = await window.startMicrophoneCapture();
+                    if (result && result.success) {
+                        this.isMicrophoneActive = true;
+                        console.log('Microphone turned on via shortcut');
+                    } else {
+                        console.error('Failed to start microphone:', result?.error || 'Unknown error');
+                        // Show user-friendly error message
+                        alert('Failed to start microphone. Please check your microphone permissions and try again.');
+                    }
+                }
+            }
+            
+            // Update the UI
+            this.requestUpdate();
+            
+        } catch (error) {
+            console.error('Failed to toggle microphone via shortcut:', error);
+            alert('Failed to toggle microphone. Please try again.');
+        }
     }
 
     updated(changedProperties) {

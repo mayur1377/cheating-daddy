@@ -10,14 +10,191 @@ let micAudioContext = null;
 let micStream = null;
 let audioBuffer = [];
 let isMicrophoneCaptureActive = false;
+// Global references to audio buffers for cleanup
+let micAudioBuffer = [];
+let micSendBuffer = [];
 const SAMPLE_RATE = 24000;
 const AUDIO_CHUNK_DURATION = 0.08; // Balanced for quality vs latency
 const BUFFER_SIZE = 2048; // Balanced buffer size for microphone quality
 
 // Microphone settings aligned with speaker audio for consistency
 const MIC_SAMPLE_RATE = 24000; // Same as SAMPLE_RATE for consistency
-const MIC_CHUNK_DURATION = 0.2; // Longer chunks for better transcription continuity
+const MIC_CHUNK_DURATION = 0.08; // Reduced from 0.2s to 0.08s for faster transcription response
 const MIC_BUFFER_SIZE = 1024; // Match speaker audio buffer size for consistency
+
+// Smart Audio Router for automatic speaker detection and switching
+class SmartAudioRouter {
+    constructor() {
+        this.recentActivity = {
+            interviewer: [],
+            interviewee: []
+        };
+        this.currentSpeaker = null;
+        this.switchCooldown = 200; // 200ms cooldown between switches - more responsive
+        this.lastSwitch = 0;
+        this.vadThreshold = {
+            interviewer: 0.01,  // Higher threshold for speaker audio
+            interviewee: 0.003  // Much lower threshold for microphone
+        };
+        console.log('🎯 SmartAudioRouter initialized');
+    }
+
+    enhancedVAD(audioData, source) {
+        const rms = calculateRMS(audioData);
+        const silencePercentage = calculateSilencePercentage(audioData);
+        
+        // Source-specific thresholds
+        const threshold = this.vadThreshold[source];
+        const maxSilence = source === 'interviewer' ? 80 : 85;
+        
+        const hasVoice = rms > threshold && silencePercentage < maxSilence;
+        
+        // Better confidence calculation
+        let confidence = 0;
+        if (hasVoice) {
+            // Normalize confidence based on threshold
+            const normalizedRms = Math.min(rms / threshold, 10); // Cap at 10x threshold
+            confidence = Math.min(normalizedRms * 0.2, 1.0); // Scale to 0-1
+        }
+        
+        return {
+            hasVoice,
+            confidence,
+            source,
+            rms,
+            silencePercentage
+        };
+    }
+
+    processAudioChunk(audioData, source) {
+        const vad = this.enhancedVAD(audioData, source);
+        const now = Date.now();
+        
+        // Simplified debug for microphone
+        if (source === 'interviewee' && vad.hasVoice) {
+            process.stdout.write(`V`); // Voice detected
+        }
+        
+        // Track recent activity
+        this.recentActivity[source].push({
+            timestamp: now,
+            hasVoice: vad.hasVoice,
+            confidence: vad.confidence
+        });
+        
+        // Clean old activity (keep last 2 seconds)
+        this.recentActivity[source] = this.recentActivity[source]
+            .filter(activity => now - activity.timestamp < 2000);
+        
+        // Determine if this source should be active
+        const shouldBeActive = this.shouldActivateSource(source, vad);
+        
+        if (shouldBeActive && this.canSwitch(now)) {
+            this.switchToSource(source);
+        }
+        
+        // Send audio if voice detected and this source should be active
+        if (vad.hasVoice && shouldBeActive) {
+            this.sendAudioChunk(audioData, source);
+            return true; // Audio was sent
+        }
+        
+        return false; // Audio was not sent
+    }
+    
+    shouldActivateSource(source, vad) {
+        if (!vad.hasVoice) return false;
+        
+        // If no current speaker, activate if voice detected
+        if (!this.currentSpeaker) return true;
+        
+        // If same source, continue if voice active
+        if (this.currentSpeaker === source) return true;
+        
+        // Switch if other source has reasonable signal
+        const otherSource = source === 'interviewer' ? 'interviewee' : 'interviewer';
+        const otherActivity = this.getRecentActivity(otherSource);
+        
+        // Much more permissive switching - prioritize any voice activity
+        return vad.confidence > 0.1 && otherActivity < 0.5;
+    }
+    
+    getRecentActivity(source) {
+        const recent = this.recentActivity[source]
+            .filter(a => a.hasVoice)
+            .slice(-5); // Last 5 voice detections
+        
+        if (recent.length === 0) return 0;
+        
+        return recent.reduce((sum, a) => sum + a.confidence, 0) / recent.length;
+    }
+    
+    canSwitch(now) {
+        return now - this.lastSwitch > this.switchCooldown;
+    }
+    
+    switchToSource(source) {
+        if (this.currentSpeaker !== source) {
+            console.log(`🔄 Switching audio focus to: ${source}`);
+            this.currentSpeaker = source;
+            this.lastSwitch = Date.now();
+            
+            // Update UI indicator if available
+            this.updateAudioSourceIndicator(source);
+        }
+    }
+    
+    updateAudioSourceIndicator(source) {
+        // Dispatch custom event for UI updates
+        const event = new CustomEvent('audioSourceChanged', {
+            detail: {
+                activeSource: source,
+                timestamp: Date.now()
+            }
+        });
+        window.dispatchEvent(event);
+        
+        // Also update any existing status elements
+        const statusElement = document.querySelector('#audio-source-status');
+        if (statusElement) {
+            statusElement.textContent = source === 'interviewer' ? '🔊 Speaker Active' : '🎤 Microphone Active';
+            statusElement.className = `audio-status ${source}`;
+        }
+    }
+    
+    getCurrentSpeaker() {
+        return this.currentSpeaker;
+    }
+    
+    getActivityStats() {
+        return {
+            interviewer: this.getRecentActivity('interviewer'),
+            interviewee: this.getRecentActivity('interviewee'),
+            currentSpeaker: this.currentSpeaker,
+            lastSwitch: this.lastSwitch
+        };
+    }
+    
+    sendAudioChunk(audioData, source) {
+        // Convert to WAV format for better compatibility
+        const sampleRate = source === 'interviewer' ? SAMPLE_RATE : MIC_SAMPLE_RATE;
+        const wavBuffer = createWavBuffer(audioData, sampleRate);
+        const base64Data = arrayBufferToBase64(wavBuffer);
+        
+        console.log(`🎵 Sending ${source} audio: ${audioData.length} samples, ${(audioData.length / sampleRate).toFixed(2)}s duration`);
+        
+        ipcRenderer.invoke('send-audio-content', {
+            data: base64Data,
+            mimeType: 'audio/wav',
+            source: source === 'interviewer' ? 'interviewer' : 'interviewee'
+        }).catch(error => {
+            console.warn(`Audio send failed for ${source}:`, error.message);
+        });
+    }
+}
+
+// Global audio router instance
+let audioRouter = null;
 
 // Real-time audio optimization:
 // - Different settings for mic vs speaker audio
@@ -29,7 +206,8 @@ let offscreenCanvas = null;
 let offscreenContext = null;
 let currentImageQuality = 'medium'; // Store current image quality for manual screenshots
 
-const isLinux = process.platform === 'linux';
+// Linux platform detection commented out - Windows only deployment
+// const isLinux = process.platform === 'linux';
 const isMacOS = process.platform === 'darwin';
 
 // Token tracking system for rate limiting
@@ -173,6 +351,44 @@ function arrayBufferToBase64(buffer) {
     return btoa(binary);
 }
 
+// Create WAV buffer from Float32Array
+function createWavBuffer(float32Array, sampleRate) {
+    const length = float32Array.length;
+    const buffer = new ArrayBuffer(44 + length * 2);
+    const view = new DataView(buffer);
+    
+    // WAV header
+    const writeString = (offset, string) => {
+        for (let i = 0; i < string.length; i++) {
+            view.setUint8(offset + i, string.charCodeAt(i));
+        }
+    };
+    
+    writeString(0, 'RIFF');
+    view.setUint32(4, 36 + length * 2, true);
+    writeString(8, 'WAVE');
+    writeString(12, 'fmt ');
+    view.setUint32(16, 16, true);
+    view.setUint16(20, 1, true);
+    view.setUint16(22, 1, true);
+    view.setUint32(24, sampleRate, true);
+    view.setUint32(28, sampleRate * 2, true);
+    view.setUint16(32, 2, true);
+    view.setUint16(34, 16, true);
+    writeString(36, 'data');
+    view.setUint32(40, length * 2, true);
+    
+    // Convert float32 to int16 and write to buffer
+    let offset = 44;
+    for (let i = 0; i < length; i++) {
+        const sample = Math.max(-1, Math.min(1, float32Array[i]));
+        view.setInt16(offset, sample < 0 ? sample * 0x8000 : sample * 0x7FFF, true);
+        offset += 2;
+    }
+    
+    return buffer;
+}
+
 async function initializeGemini(profile = 'interview', language = 'en-US') {
     const apiKey = localStorage.getItem('apiKey')?.trim();
     if (apiKey) {
@@ -207,6 +423,10 @@ async function startCapture(screenshotIntervalSeconds = 5, imageQuality = 'mediu
     console.log('🎯 Token tracker reset for new capture session');
 
     try {
+        // Initialize smart audio router for automatic speaker detection
+        audioRouter = new SmartAudioRouter();
+        console.log('🎯 Smart audio routing enabled');
+
         if (isMacOS) {
             // On macOS, use SystemAudioDump for audio and getDisplayMedia for screen
             console.log('Starting macOS capture with SystemAudioDump...');
@@ -228,41 +448,42 @@ async function startCapture(screenshotIntervalSeconds = 5, imageQuality = 'mediu
             });
 
             console.log('macOS screen capture started - audio handled by SystemAudioDump');
-        } else if (isLinux) {
-            // Linux - use display media for screen capture and getUserMedia for microphone
-            mediaStream = await navigator.mediaDevices.getDisplayMedia({
-                video: {
-                    frameRate: 1,
-                    width: { ideal: 1920 },
-                    height: { ideal: 1080 },
-                },
-                audio: false, // Don't use system audio loopback on Linux
-            });
+        // Linux functionality commented out - Windows only deployment
+        // } else if (isLinux) {
+        //     // Linux - use display media for screen capture and getUserMedia for microphone
+        //     mediaStream = await navigator.mediaDevices.getDisplayMedia({
+        //         video: {
+        //             frameRate: 1,
+        //             width: { ideal: 1920 },
+        //             height: { ideal: 1080 },
+        //         },
+        //         audio: false, // Don't use system audio loopback on Linux
+        //     });
 
-            // Get microphone input for Linux
-            let micStream = null;
-            try {
-                micStream = await navigator.mediaDevices.getUserMedia({
-                    audio: {
-                        sampleRate: SAMPLE_RATE,
-                        channelCount: 1,
-                        echoCancellation: true,
-                        noiseSuppression: true,
-                        autoGainControl: true,
-                    },
-                    video: false,
-                });
+        //     // Get microphone input for Linux
+        //     let micStream = null;
+        //     try {
+        //         micStream = await navigator.mediaDevices.getUserMedia({
+        //             audio: {
+        //                 sampleRate: SAMPLE_RATE,
+        //                 channelCount: 1,
+        //                 echoCancellation: true,
+        //                 noiseSuppression: true,
+        //                 autoGainControl: true,
+        //             },
+        //             video: false,
+        //         });
 
-                console.log('Linux microphone capture started');
+        //         console.log('Linux microphone capture started');
 
-                // Setup audio processing for microphone on Linux
-                setupLinuxMicProcessing(micStream);
-            } catch (micError) {
-                console.warn('Failed to get microphone access on Linux:', micError);
-                // Continue without microphone if permission denied
-            }
+        //         // Setup audio processing for microphone on Linux - commented out for Windows-only deployment
+        //         // setupLinuxMicProcessing(micStream);
+        //     } catch (micError) {
+        //         console.warn('Failed to get microphone access on Linux:', micError);
+        //         // Continue without microphone if permission denied
+        //     }
 
-            console.log('Linux screen capture started');
+        //     console.log('Linux screen capture started');
         } else {
             // Windows - use display media with loopback for system audio
             mediaStream = await navigator.mediaDevices.getDisplayMedia({
@@ -282,8 +503,12 @@ async function startCapture(screenshotIntervalSeconds = 5, imageQuality = 'mediu
 
             console.log('Windows capture started with loopback audio');
 
-            // Setup audio processing for Windows loopback audio only
+            // Setup audio processing for Windows loopback audio (interviewer)
             setupWindowsLoopbackProcessing();
+            
+            // Also start microphone capture for interviewee audio
+            console.log('🎤 Starting dual audio capture (loopback + microphone)');
+            await startMicrophoneCapture();
         }
 
         console.log('MediaStream obtained:', {
@@ -309,50 +534,75 @@ async function startCapture(screenshotIntervalSeconds = 5, imageQuality = 'mediu
     }
 }
 
-function setupLinuxMicProcessing(micStream) {
-    // Setup microphone audio processing for Linux with mic-specific settings
-    const micAudioContext = new AudioContext({ sampleRate: MIC_SAMPLE_RATE });
-    const micSource = micAudioContext.createMediaStreamSource(micStream);
-    const micProcessor = micAudioContext.createScriptProcessor(MIC_BUFFER_SIZE, 1, 1);
+// Linux-specific functionality commented out - Windows only deployment
+// function setupLinuxMicProcessing(micStream) {
+//     // Setup microphone audio processing for Linux with buffering like other audio sources
+//     const micAudioContext = new AudioContext({ sampleRate: MIC_SAMPLE_RATE });
+//     const micSource = micAudioContext.createMediaStreamSource(micStream);
+//     const micProcessor = micAudioContext.createScriptProcessor(MIC_BUFFER_SIZE, 1, 1);
 
-    let audioBuffer = [];
-    const samplesPerChunk = MIC_SAMPLE_RATE * MIC_CHUNK_DURATION;
+//     let audioBuffer = [];
+//     let sendBuffer = []; // Buffer to accumulate chunks before sending
+//     const samplesPerChunk = MIC_SAMPLE_RATE * MIC_CHUNK_DURATION;
+//     const SEND_BUFFER_DURATION = 2.0; // Match other audio sources
+//     const chunksPerSend = Math.ceil(SEND_BUFFER_DURATION / MIC_CHUNK_DURATION);
+//     let chunkCount = 0;
+//     let lastSendTime = Date.now();
+//     const SEND_TIMEOUT = 3000; // Match other audio sources
 
-    micProcessor.onaudioprocess = e => {
-        const inputData = e.inputBuffer.getChannelData(0);
-        audioBuffer.push(...inputData);
+//     micProcessor.onaudioprocess = e => {
+//         const inputData = e.inputBuffer.getChannelData(0);
+//         audioBuffer.push(...inputData);
 
-        // Process audio immediately - direct like speaker audio
-        while (audioBuffer.length >= samplesPerChunk) {
-            const chunk = audioBuffer.splice(0, samplesPerChunk);
-            const float32Chunk = new Float32Array(chunk);
-            const pcmData16 = convertFloat32ToInt16(float32Chunk);
+//         // Process audio in chunks with buffering
+//         while (audioBuffer.length >= samplesPerChunk) {
+//             const chunk = audioBuffer.splice(0, samplesPerChunk);
             
-            // Apply Voice Activity Detection to filter silent chunks
-            const rmsValue = calculateRMS(float32Chunk);
-            const silencePercentage = calculateSilencePercentage(float32Chunk);
+//             // Add chunk to send buffer to maintain continuity
+//             sendBuffer.push(...chunk);
+//             chunkCount++;
             
-            // Only send audio if it contains voice activity (same thresholds as speaker audio)
-            if (rmsValue > 0.005 && silencePercentage < 70) {
-                const base64Data = arrayBufferToBase64(pcmData16.buffer);
-                
-                ipcRenderer.invoke('send-audio-content', {
-                    data: base64Data,
-                    mimeType: 'audio/pcm;rate=24000',
-                    source: 'interviewee' // Microphone audio
-                }).catch(error => {
-                    console.warn('Linux microphone audio send failed:', error.message);
-                });
-            }
-        }
-    };
+//             // Send accumulated buffer when we have enough chunks or after timeout
+//             const now = Date.now();
+//             const shouldSendByTimeout = sendBuffer.length > 0 && (now - lastSendTime) > SEND_TIMEOUT;
+            
+//             if (chunkCount >= chunksPerSend || shouldSendByTimeout) {
+//                 if (sendBuffer.length > 0) {
+//                     const float32SendChunk = new Float32Array(sendBuffer);
+//                     const pcmData16 = convertFloat32ToInt16(float32SendChunk);
+                    
+//                     // Apply Voice Activity Detection to the accumulated buffer
+//                     const rmsValue = calculateRMS(float32SendChunk);
+//                     const silencePercentage = calculateSilencePercentage(float32SendChunk);
+                    
+//                     // Only send audio if it contains voice activity
+//                     if (rmsValue > 0.005 && silencePercentage < 70) {
+//                         const base64Data = arrayBufferToBase64(pcmData16.buffer);
+                        
+//                         ipcRenderer.invoke('send-audio-content', {
+//                             data: base64Data,
+//                             mimeType: 'audio/pcm;rate=24000',
+//                             source: 'interviewee' // Microphone audio
+//                         }).catch(error => {
+//                             console.warn('Linux microphone audio send failed:', error.message);
+//                         });
+//                     }
+                    
+//                     // Reset buffers and timer
+//                     sendBuffer = [];
+//                     chunkCount = 0;
+//                     lastSendTime = now;
+//                 }
+//             }
+//         }
+//     };
 
-    micSource.connect(micProcessor);
-    micProcessor.connect(micAudioContext.destination);
+//     micSource.connect(micProcessor);
+//     micProcessor.connect(micAudioContext.destination);
 
-    // Store processor reference for cleanup
-    audioProcessor = micProcessor;
-}
+//     // Store processor reference for cleanup
+//     audioProcessor = micProcessor;
+// }
 
 // New function to start microphone capture independently
 async function startMicrophoneCapture() {
@@ -361,38 +611,68 @@ async function startMicrophoneCapture() {
         return { success: true };
     }
 
+    console.log('🎤 Starting microphone capture...');
+    
     try {
+        // Check if getUserMedia is available
+        if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+            throw new Error('getUserMedia is not supported in this browser');
+        }
+        
+        console.log('🎤 Requesting microphone access...');
+        
         // Get microphone access with optimized settings for transcription
         micStream = await navigator.mediaDevices.getUserMedia({
             audio: {
                 sampleRate: MIC_SAMPLE_RATE, // Use exact microphone sample rate
                 channelCount: 1,
-                echoCancellation: true,
-                noiseSuppression: true,  // Enable to reduce background noise
-                autoGainControl: true,   // Enable to normalize volume levels
-                latency: 0.01,          // Request low latency
-                volume: 1.0             // Maximum volume
+                echoCancellation: false,  // Disable to preserve speech clarity
+                noiseSuppression: false,  // Disable to preserve speech clarity
+                autoGainControl: false,   // Disable to prevent volume fluctuations
+                latency: 0.01,           // Request low latency
+                volume: 1.0              // Maximum volume
             },
             video: false,
         });
+        
+        console.log('🎤 Microphone access granted, setting up audio processing...');
 
         // Setup audio processing with mic-specific settings
+        console.log('🎤 Creating audio context with sample rate:', MIC_SAMPLE_RATE);
         micAudioContext = new AudioContext({ sampleRate: MIC_SAMPLE_RATE });
+        
+        console.log('🎤 Creating media stream source...');
         const micSource = micAudioContext.createMediaStreamSource(micStream);
+        
+        console.log('🎤 Creating script processor with buffer size:', MIC_BUFFER_SIZE);
         micAudioProcessor = micAudioContext.createScriptProcessor(MIC_BUFFER_SIZE, 1, 1);
 
-        let micAudioBuffer = [];
-        let micSendBuffer = []; // Buffer to accumulate chunks before sending
+        // Clear any existing buffers from previous sessions
+        micAudioBuffer = [];
+        micSendBuffer = []; // Buffer to accumulate chunks before sending
         const samplesPerChunk = MIC_SAMPLE_RATE * MIC_CHUNK_DURATION;
-        const SEND_BUFFER_DURATION = 3.0; // Accumulate 3 seconds of audio before sending
+        const SEND_BUFFER_DURATION = 2.0; // Accumulate 2.0 seconds of audio before sending
         const chunksPerSend = Math.ceil(SEND_BUFFER_DURATION / MIC_CHUNK_DURATION);
         let chunkCount = 0;
         let lastSendTime = Date.now();
-        const SEND_TIMEOUT = 4000; // Send after 4 seconds even if buffer not full
+        const SEND_TIMEOUT = 3000; // Send after 3 seconds even if buffer not full
 
         micAudioProcessor.onaudioprocess = e => {
             const inputData = e.inputBuffer.getChannelData(0);
-            micAudioBuffer.push(...inputData);
+            
+            // Apply gain boost to amplify microphone signal
+            const gainBoost = 3.0; // 3x amplification
+            const amplifiedData = new Float32Array(inputData.length);
+            for (let i = 0; i < inputData.length; i++) {
+                amplifiedData[i] = Math.max(-1.0, Math.min(1.0, inputData[i] * gainBoost));
+            }
+            
+            // Debug: Log first few audio processing events
+            if (micAudioBuffer.length < 10000) { // Only log for first ~10 seconds
+                console.log('🎤 Audio data received, length:', amplifiedData.length, 'first sample:', amplifiedData[0]);
+            }
+            
+            micAudioBuffer.push(...amplifiedData);
 
             // Process audio in chunks
             while (micAudioBuffer.length >= samplesPerChunk) {
@@ -407,6 +687,11 @@ async function startMicrophoneCapture() {
                 const rmsValue = calculateRMS(float32Chunk);
                 const silencePercentage = calculateSilencePercentage(float32Chunk);
                 
+                // Debug audio levels every 50 chunks (~4 seconds)
+                if (chunkCount % 50 === 0) {
+                    console.log(`🎤 Audio levels (Amplified) - RMS: ${rmsValue.toFixed(4)}, Silence: ${silencePercentage.toFixed(1)}%, Max: ${Math.max(...float32Chunk).toFixed(4)}, Min: ${Math.min(...float32Chunk).toFixed(4)}`);
+                }
+                
                 // Send accumulated buffer when we have enough chunks or after timeout
                 const now = Date.now();
                 const shouldSendByTimeout = micSendBuffer.length > 0 && (now - lastSendTime) > SEND_TIMEOUT;
@@ -414,16 +699,32 @@ async function startMicrophoneCapture() {
                 if (chunkCount >= chunksPerSend || shouldSendByTimeout) {
                     if (micSendBuffer.length > 0) {
                         const float32SendChunk = new Float32Array(micSendBuffer);
-                        const pcmData16 = convertFloat32ToInt16(float32SendChunk);
-                        const base64Data = arrayBufferToBase64(pcmData16.buffer);
                         
-                        ipcRenderer.invoke('send-audio-content', {
-                            data: base64Data,
-                            mimeType: 'audio/pcm;rate=24000',
-                            source: 'interviewee' // Microphone audio
-                        }).catch(error => {
-                            console.warn('Microphone audio send failed:', error.message);
-                        });
+                        // Use smart audio router for automatic speaker detection
+                        if (audioRouter) {
+                            const wasProcessed = audioRouter.processAudioChunk(float32SendChunk, 'interviewee');
+                            if (wasProcessed) {
+                                process.stdout.write('M'); // Microphone audio sent
+                            } else {
+                                process.stdout.write('m'); // Microphone audio detected but not sent
+                            }
+                        } else {
+                            process.stdout.write('R'); // Router not available
+                            // Fallback to original logic if router not available
+                            // Convert to WAV format for better compatibility
+                            const wavBuffer = createWavBuffer(float32SendChunk, MIC_SAMPLE_RATE);
+                            const base64Data = arrayBufferToBase64(wavBuffer);
+                            
+                            console.log(`🎤 Sending microphone audio: ${float32SendChunk.length} samples, ${(float32SendChunk.length / MIC_SAMPLE_RATE).toFixed(2)}s duration`);
+                            
+                            ipcRenderer.invoke('send-audio-content', {
+                                data: base64Data,
+                                mimeType: 'audio/wav',
+                                source: 'interviewee'
+                            }).catch(error => {
+                                console.warn('Microphone audio send failed:', error.message);
+                            });
+                        }
                         
                         // Reset buffers and timer
                         micSendBuffer = [];
@@ -434,11 +735,17 @@ async function startMicrophoneCapture() {
             }
         };
 
+        console.log('🎤 Setting up audio processor event handler...');
+        
+        console.log('🎤 Connecting audio nodes...');
         micSource.connect(micAudioProcessor);
         micAudioProcessor.connect(micAudioContext.destination);
 
         isMicrophoneCaptureActive = true;
-        console.log('Microphone capture started successfully');
+        console.log('🎤 Microphone capture started successfully!');
+        console.log('🎤 Audio context state:', micAudioContext.state);
+        console.log('🎤 Stream active:', micStream.active);
+        console.log('🎤 Stream tracks:', micStream.getTracks().map(track => ({ kind: track.kind, enabled: track.enabled, readyState: track.readyState })));
         
         return { success: true };
     } catch (error) {
@@ -465,8 +772,12 @@ async function stopMicrophoneCapture() {
             micStream = null;
         }
 
+        // Clear audio buffers to prevent accumulation
+        micAudioBuffer = [];
+        micSendBuffer = [];
+
         isMicrophoneCaptureActive = false;
-        console.log('Microphone capture stopped');
+        console.log('Microphone capture stopped and buffers cleared');
         
         return { success: true };
     } catch (error) {
@@ -476,33 +787,66 @@ async function stopMicrophoneCapture() {
 }
 
 function setupWindowsLoopbackProcessing() {
-    // Setup audio processing for Windows loopback audio only
+    // Setup audio processing for Windows loopback audio with buffering like microphone
     audioContext = new AudioContext({ sampleRate: SAMPLE_RATE });
     const source = audioContext.createMediaStreamSource(mediaStream);
     audioProcessor = audioContext.createScriptProcessor(BUFFER_SIZE, 1, 1);
 
     let audioBuffer = [];
+    let sendBuffer = []; // Buffer to accumulate chunks before sending
     const samplesPerChunk = SAMPLE_RATE * AUDIO_CHUNK_DURATION;
+    const SEND_BUFFER_DURATION = 2.0; // Match microphone buffering
+    const chunksPerSend = Math.ceil(SEND_BUFFER_DURATION / AUDIO_CHUNK_DURATION);
+    let chunkCount = 0;
+    let lastSendTime = Date.now();
+    const SEND_TIMEOUT = 3000; // Match microphone timeout
 
     audioProcessor.onaudioprocess = e => {
             const inputData = e.inputBuffer.getChannelData(0);
             audioBuffer.push(...inputData);
 
-            // Process audio immediately - direct like microphone audio
+            // Process audio in chunks with buffering
             while (audioBuffer.length >= samplesPerChunk) {
                 const chunk = audioBuffer.splice(0, samplesPerChunk);
-                const float32Chunk = new Float32Array(chunk);
-                const pcmData16 = convertFloat32ToInt16(float32Chunk);
-                const base64Data = arrayBufferToBase64(pcmData16.buffer);
-
-                // Send immediately without setImmediate - direct like microphone audio
-                ipcRenderer.invoke('send-audio-content', {
-                    data: base64Data,
-                    mimeType: 'audio/pcm;rate=24000',
-                    source: 'interviewer' // System/speaker audio (loopback)
-                }).catch(error => {
-                    console.warn('Audio send failed:', error.message);
-                });
+                
+                // Add chunk to send buffer to maintain continuity
+                sendBuffer.push(...chunk);
+                chunkCount++;
+                
+                // Send accumulated buffer when we have enough chunks or after timeout
+                const now = Date.now();
+                const shouldSendByTimeout = sendBuffer.length > 0 && (now - lastSendTime) > SEND_TIMEOUT;
+                
+                if (chunkCount >= chunksPerSend || shouldSendByTimeout) {
+                    if (sendBuffer.length > 0) {
+                        const float32SendChunk = new Float32Array(sendBuffer);
+                        
+                        // Use smart audio router for automatic speaker detection
+                        if (audioRouter) {
+                            const wasProcessed = audioRouter.processAudioChunk(float32SendChunk, 'interviewer');
+                            if (wasProcessed) {
+                                process.stdout.write('S'); // Speaker audio sent
+                            }
+                        } else {
+                            // Fallback to original logic if router not available
+                            const pcmData16 = convertFloat32ToInt16(float32SendChunk);
+                            const base64Data = arrayBufferToBase64(pcmData16.buffer);
+                            
+                            ipcRenderer.invoke('send-audio-content', {
+                                data: base64Data,
+                                mimeType: 'audio/pcm;rate=24000',
+                                source: 'interviewer'
+                            }).catch(error => {
+                                console.warn('Audio send failed:', error.message);
+                            });
+                        }
+                        
+                        // Reset buffers and timer
+                        sendBuffer = [];
+                        chunkCount = 0;
+                        lastSendTime = now;
+                    }
+                }
             }
         };
 
@@ -625,22 +969,32 @@ async function captureManualScreenshot(imageQuality = null) {
 // Expose functions to global scope for external access
 window.captureManualScreenshot = captureManualScreenshot;
 
-function stopCapture() {
+async function stopCapture() {
+    console.log('Stopping capture...');
+
+    // Clear screenshot interval
     if (screenshotInterval) {
         clearInterval(screenshotInterval);
         screenshotInterval = null;
     }
 
+    // Stop microphone capture if active
+    if (isMicrophoneCaptureActive) {
+        await stopMicrophoneCapture();
+    }
+
+    // Stop audio processing
     if (audioProcessor) {
         audioProcessor.disconnect();
         audioProcessor = null;
     }
 
     if (audioContext) {
-        audioContext.close();
+        await audioContext.close();
         audioContext = null;
     }
 
+    // Stop media stream
     if (mediaStream) {
         mediaStream.getTracks().forEach(track => track.stop());
         mediaStream = null;
@@ -653,6 +1007,12 @@ function stopCapture() {
         });
     }
 
+    // Reset audio router
+    if (audioRouter) {
+        console.log('🎯 Resetting smart audio router');
+        audioRouter = null;
+    }
+
     // Clean up hidden elements
     if (hiddenVideo) {
         hiddenVideo.pause();
@@ -661,6 +1021,8 @@ function stopCapture() {
     }
     offscreenCanvas = null;
     offscreenContext = null;
+
+    console.log('Capture stopped');
 }
 
 // Send text message to Gemini
@@ -840,7 +1202,10 @@ window.cheddar = {
         const contentProtection = localStorage.getItem('contentProtection');
         return contentProtection !== null ? contentProtection === 'true' : true;
     },
-    isLinux: isLinux,
+    // isLinux: isLinux, // Commented out - Windows only deployment
     isMacOS: isMacOS,
     e: cheddarElement,
+    // Audio router functions for debugging and monitoring
+    getAudioRouter: () => audioRouter,
+    getAudioStats: () => audioRouter ? audioRouter.getActivityStats() : null,
 };
