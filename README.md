@@ -50,3 +50,40 @@ A real-time AI assistant that provides contextual help during video calls, inter
 - Gemini API key
 - Screen recording permissions
 - Microphone/audio permissions
+- Notion API key (optional, for Notion integration)
+
+## Notion Integration
+
+### What it does
+### Setting up Notion Integration
+
+1. **Create a Notion Internal Integration**:
+   - Visit the [Notion Integrations page](https://www.notion.so/my-integrations)
+   - Click "+ New integration"
+   - Name your integration (e.g., "Cheating Daddy Assistant")
+   - Select the workspace you want to connect to
+   - Under "Capabilities", ensure "Read content" is checked
+   - Click "Submit" to create the integration
+   - Copy your "Internal Integration Secret" (this is your Notion API key)
+
+2. **Share your Notion pages/databases with the integration**:
+   - Open a Notion page or database you want to use as context
+   - Click "Share" in the top-right corner
+   - Under "Invite", search for and select your integration name
+   - Click "Invite"
+   - Repeat for all pages/databases you want to use
+
+3. **Configure in the app**:
+   - Open the app and go to Settings
+   - Scroll to the "Notion Integration" section
+   - Paste your Notion API key (Internal Integration Secret)
+   - Click "Test Connection" to verify connectivity
+   - Click "Add Notion Page" and paste the URL of your page/database
+   - Toggle the switch to enable/disable specific pages
+
+### Usage Tips
+
+- The app will automatically fetch the content from all enabled Notion sources before starting an AI session
+- Toggle pages on/off depending on the context you need for different sessions
+- For best results, use focused pages with relevant information rather than very large databases
+- Content is cached to minimize API calls, but will refresh periodically

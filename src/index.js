@@ -5,6 +5,9 @@ if (require('electron-squirrel-startup')) {
 const { app, BrowserWindow, shell, ipcMain } = require('electron');
 const { createWindow, updateGlobalShortcuts } = require('./utils/window');
 const { setupGeminiIpcHandlers, stopMacOSAudioCapture, sendToRenderer } = require('./utils/gemini');
+const { setupNotionIpcHandlers } = require('./utils/notion');
+const path = require('path');
+const url = require('url');
 
 const geminiSessionRef = { current: null };
 let mainWindow = null;
@@ -17,6 +20,7 @@ function createMainWindow() {
 app.whenReady().then(() => {
     createMainWindow();
     setupGeminiIpcHandlers(geminiSessionRef);
+    setupNotionIpcHandlers();
     setupGeneralIpcHandlers();
 });
 

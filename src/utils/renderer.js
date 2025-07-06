@@ -70,6 +70,11 @@ class SmartAudioRouter {
         const vad = this.enhancedVAD(audioData, source);
         const now = Date.now();
         
+        // Check if microphone is disabled for interviewee audio
+        if (source === 'interviewee' && !isMicrophoneCaptureActive) {
+            return false; // Don't process microphone audio when mic is toggled off
+        }
+        
         // Simplified debug for microphone
         if (source === 'interviewee' && vad.hasVoice) {
             process.stdout.write(`V`); // Voice detected
@@ -506,9 +511,8 @@ async function startCapture(screenshotIntervalSeconds = 5, imageQuality = 'mediu
             // Setup audio processing for Windows loopback audio (interviewer)
             setupWindowsLoopbackProcessing();
             
-            // Also start microphone capture for interviewee audio
-            console.log('🎤 Starting dual audio capture (loopback + microphone)');
-            await startMicrophoneCapture();
+            // Note: Microphone capture will be started manually when user toggles mic button
+            console.log('🎤 System audio capture active. Microphone can be toggled independently.');
         }
 
         console.log('MediaStream obtained:', {
